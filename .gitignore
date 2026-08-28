@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.env
+.jira-time-copy.env
+*.token
+secrets*

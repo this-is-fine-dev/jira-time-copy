@@ -1,0 +1,20 @@
+{
+  "name": "jira-time-copy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "jira-time-copy": "./jira-time-copy.mjs"
+  },
+  "scripts": {
+    "configure": "node jira-time-copy.mjs setup",
+    "start": "node jira-time-copy.mjs",
+    "test": "node jira-time-copy.mjs --selfcheck"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.7.0"
+  }
+}
