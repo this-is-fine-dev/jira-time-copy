@@ -13,8 +13,10 @@ przepisywania.
 - Jira Cloud i Jira Server/Data Center w dowolnej kombinacji;
 - interaktywny podgląd i wybór dni przed ręcznym zapisem;
 - automatyczna codzienna synchronizacja przez `launchd` na macOS;
-- ochrona przed duplikatami — automatyzacja pomija dni mające już worklog w zadaniu docelowym;
+- ochrona przed duplikatami — zgodne dni rozpoznaje jako zsynchronizowane, a różnic nie nadpisuje;
 - natywna aplikacja w pasku menu z czasem źródłowym, statusem synchronizacji i statystykami;
+- kompaktowe okno do synchronizacji dnia, bieżącego albo poprzedniego miesiąca;
+- wszystkie decyzje „Zsumuj / Pomiń / Nadpisz” oraz czytelna historia w jednym widoku;
 - odświeżanie dzisiejszego czasu z Jiry źródłowej co 5 minut, bez zapisu;
 - trwałe powiadomienia o pustych lub niepełnych dniach roboczych;
 - konfigurowalna długość pełnego dnia, godzina przypomnienia i godzina synchronizacji;
@@ -62,7 +64,7 @@ pnpm start                      # interaktywny wybór okresu, dni i sposobu zapi
 pnpm start 2026-08              # konkretny miesiąc
 pnpm start 2026-08-27           # konkretny dzień
 pnpm start 2026-08 --dry-run    # podgląd tekstowy bez zapisu
-pnpm start 2026-08 --commit     # zapis bez pytań; kolizje są pomijane
+pnpm start 2026-08 --commit     # zapis bez pytań; różnice są pomijane
 ```
 
 Bez daty interaktywny tryb proponuje poprzedni miesiąc, bieżący miesiąc, dzisiaj albo własną datę.
@@ -71,12 +73,14 @@ automatyzacji i zapisuje bez pytania.
 
 ### Kolizje
 
-Kolizja oznacza, że w zadaniu docelowym istnieje już twój worklog z danego dnia.
+Kolizja oznacza, że suma twoich worklogów z danego dnia różni się między Jirą źródłową i docelową.
+Identyczna suma oznacza dzień już zsynchronizowany i nie wymaga działania.
 
 | Tryb | Zachowanie |
 |---|---|
 | Interaktywny | Pozwala zsumować, pominąć albo nadpisać twoje wpisy z tego dnia. |
-| `--commit` / `launchd` | Pomija cały dzień i zapisuje kolizję w logu. |
+| Aplikacja macOS | Pokazuje wszystkie dni w małym oknie i pozwala ustawić decyzję przy każdej różnicy. |
+| `--commit` / `launchd` | Pomija różniący się dzień, zapisuje kolizję w logu i pokazuje powiadomienie z przyciskiem „Rozwiąż…”. |
 
 Opcja „Nadpisz” usuwa wyłącznie worklogi zalogowanego użytkownika w wybranym dniu i zadaniu
 docelowym. Cudze wpisy oraz Jira źródłowa nigdy nie są modyfikowane.
@@ -112,7 +116,8 @@ Pełny opis menu, agentów, plików, logów i diagnostyki znajduje się w
    zakresie.
 2. Dla znalezionych zadań pobierane są worklogi, filtrowane po użytkowniku i sumowane per dzień.
 3. Z Jiry docelowej pobierane są istniejące wpisy użytkownika w zadaniu zbiorczym.
-4. Dla każdego dnia bez kolizji powstaje jeden worklog z dzienną sumą.
+4. Zgodne sumy są pomijane jako już zsynchronizowane; brakujące dni są dopisywane.
+5. Przy różnicy automatyzacja niczego nie zmienia, a tryb ręczny pyta o sposób rozwiązania.
 
 Automatyczna synchronizacja bez podanej daty przetwarza bieżący miesiąc. Dzięki temu może uzupełnić
 nie tylko dzisiaj, ale również wcześniejszy brakujący dzień.
