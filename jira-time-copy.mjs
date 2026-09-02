@@ -10,13 +10,28 @@
 //
 // Zmienne z pliku konfiguracyjnego mozna nadpisac przez env.
 import assert from 'node:assert'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import * as p from '@clack/prompts'
 
 const CONFIG = process.env.JIRA_TIME_COPY_ENV ?? path.join(os.homedir(), '.jira-time-copy.env')
-const KEYS = ['SRC_URL', 'SRC_EMAIL', 'SRC_TOKEN', 'DST_URL', 'DST_EMAIL', 'DST_TOKEN', 'DST_ISSUE', 'COMMENT_KEYS']
+const ROOT = path.dirname(fileURLToPath(import.meta.url))
+const KEYS = [
+  'SRC_URL',
+  'SRC_EMAIL',
+  'SRC_TOKEN',
+  'DST_URL',
+  'DST_EMAIL',
+  'DST_TOKEN',
+  'DST_ISSUE',
+  'COMMENT_KEYS',
+  'SYNC_TIME',
+  'REMINDER_TIME',
+  'WORKDAY_HOURS',
+]
 const REQUIRED = ['SRC_URL', 'SRC_TOKEN', 'DST_URL', 'DST_TOKEN', 'DST_ISSUE']
 
 const jira = (base, token, email) => {
@@ -49,6 +64,19 @@ const range = (arg) => {
   const last = new Date(Date.UTC(y, m, 0)).getUTCDate()
   return [`${arg}-01`, `${arg}-${String(last).padStart(2, '0')}`]
 }
+
+// ponytail: kalendarz urlopow/swiat dopiero, gdy falszywe alarmy beda problemem.
+const workdays = (from, to) => {
+  const out = []
+  const end = new Date(`${to}T00:00:00Z`)
+  for (const d = new Date(`${from}T00:00:00Z`); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+    if (![0, 6].includes(d.getUTCDay())) out.push(d.toISOString().slice(0, 10))
+  }
+  return out
+}
+
+const underreported = (days, from, to, expected) =>
+  workdays(from, to).filter((d) => (days[d]?.secs ?? 0) < expected)
 
 /** { dzien: { secs, keys[] } } z worklogow uzytkownika */
 async function collect(call, uid, from, to) {
@@ -178,6 +206,39 @@ async function setup() {
   ))
     ? '1'
     : ''
+  if (process.platform === 'darwin')
+    cfg.SYNC_TIME = (
+      await ask(
+        p.text({
+          message: 'Godzina codziennej automatycznej synchronizacji',
+          initialValue: old.SYNC_TIME || '23:00',
+          validate: (v) => (/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(v.trim()) ? undefined : 'format GG:MM'),
+        }),
+      )
+    ).trim()
+  if (process.platform === 'darwin')
+    cfg.REMINDER_TIME = (
+      await ask(
+        p.text({
+          message: 'Godzina przypomnienia o brakujacych worklogach',
+          initialValue: old.REMINDER_TIME || '16:00',
+          validate: (v) => (/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(v.trim()) ? undefined : 'format GG:MM'),
+        }),
+      )
+    ).trim()
+  if (process.platform === 'darwin') {
+    const hours = await ask(
+      p.text({
+        message: 'Ile godzin oznacza pełny dzień pracy?',
+        initialValue: old.WORKDAY_HOURS || '8',
+        validate: (v) => {
+          const n = Number(v.trim().replace(',', '.'))
+          return n > 0 && n <= 24 ? undefined : 'podaj liczbę od 0 do 24, np. 8'
+        },
+      }),
+    )
+    cfg.WORKDAY_HOURS = String(Number(hours.trim().replace(',', '.')))
+  }
 
   const s = p.spinner()
   s.start('Sprawdzam dostep do obu Jir')
@@ -212,7 +273,26 @@ async function setup() {
       '\n',
     { mode: 0o600 },
   )
-  p.outro(`Zapisano ${CONFIG} — teraz: pnpm start`)
+  fs.chmodSync(CONFIG, 0o600)
+
+  if (process.platform === 'darwin') {
+    try {
+      execFileSync(
+        process.execPath,
+        [path.join(ROOT, 'macos/install.mjs'), cfg.SYNC_TIME, cfg.REMINDER_TIME, CONFIG, cfg.WORKDAY_HOURS],
+        { stdio: 'inherit' },
+      )
+    } catch {
+      p.cancel(`Konfiguracja Jiry zapisana w ${CONFIG}, ale instalacja aplikacji macOS nie powiodla sie.`)
+      process.exit(1)
+    }
+  }
+
+  p.outro(
+    process.platform === 'darwin'
+      ? `Gotowe — próg ${cfg.WORKDAY_HOURS} h, przypomnienie o ${cfg.REMINDER_TIME}, synchronizacja o ${cfg.SYNC_TIME}.`
+      : `Zapisano ${CONFIG} — teraz: pnpm start`,
+  )
 }
 
 // --- wspolne dla obu trybow ----------------------------------------------
@@ -238,6 +318,75 @@ const fetchBoth = async (cfg, from, to) => {
   const days = await collect(src, ident(await me(src)), from, to)
   const done = await existingByDay(dst, cfg.DST_ISSUE, ident(await me(dst)))
   return { dst, days, done }
+}
+
+const notification = (message) => {
+  if (process.env.JIRA_TIME_COPY_NOTIFIER)
+    return execFileSync(process.env.JIRA_TIME_COPY_NOTIFIER, ['--notify', message])
+  return execFileSync('/usr/bin/osascript', [
+      '-e',
+      'on run argv',
+      '-e',
+      'display notification (item 1 of argv) with title "Jira Time Copy"',
+      '-e',
+      'end run',
+      message,
+    ])
+}
+
+async function remind() {
+  const cfg = config()
+  need(cfg)
+  const now = today()
+  const from = `${now.slice(0, 7)}-01`
+  const expectedHours = Number(cfg.WORKDAY_HOURS || 8)
+  if (!(expectedHours > 0 && expectedHours <= 24)) throw new Error('WORKDAY_HOURS musi być liczbą od 0 do 24.')
+  const expected = expectedHours * 3600
+  let days
+
+  try {
+    const src = jira(cfg.SRC_URL, cfg.SRC_TOKEN, cfg.SRC_EMAIL)
+    days = await collect(src, ident(await me(src)), from, now)
+  } catch (e) {
+    notification('Nie udało się sprawdzić brakujących worklogów w Jirze źródłowej.')
+    throw e
+  }
+
+  const short = underreported(days, from, now, expected)
+  if (!short.length) {
+    console.log(`${new Date().toISOString()} wszystkie dni robocze mają co najmniej ${h(expected)}h`)
+    return
+  }
+
+  const earlier = short
+    .filter((d) => d !== now)
+    .map((d) => `${d.slice(8)}.${d.slice(5, 7)} (${h(days[d]?.secs ?? 0)}/${h(expected)} h)`)
+  const parts = []
+  if (short.includes(now))
+    parts.push(`Dzisiaj masz ${h(days[now]?.secs ?? 0)} z oczekiwanych ${h(expected)} h w Jirze źródłowej.`)
+  if (earlier.length) parts.push(`Niepełne poprzednie dni: ${earlier.join(', ')}.`)
+  notification(parts.join(' '))
+  console.log(`${new Date().toISOString()} przypomnienie: ${short.join(', ')}`)
+}
+
+async function pollStatus() {
+  const cfg = config()
+  need(cfg)
+  const now = today()
+  const file = process.env.JIRA_TIME_COPY_STATUS ?? path.join(os.homedir(), 'Library', 'Application Support', 'jira-time-copy', 'status.json')
+  let state
+  try {
+    const src = jira(cfg.SRC_URL, cfg.SRC_TOKEN, cfg.SRC_EMAIL)
+    const days = await collect(src, ident(await me(src)), now, now)
+    state = { checkedAt: new Date().toISOString(), seconds: days[now]?.secs ?? 0 }
+  } catch (e) {
+    state = { checkedAt: new Date().toISOString(), error: String(e.message).slice(0, 300) }
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(state), { mode: 0o600 })
+  fs.renameSync(`${file}.tmp`, file)
+  if (state.error) throw new Error(state.error)
+  console.log(`${state.checkedAt} dzisiaj w Jirze źródłowej: ${h(state.seconds)}h`)
 }
 
 // --- tryb interaktywny ----------------------------------------------------
@@ -374,6 +523,7 @@ async function tui(args) {
 
 async function run(args) {
   const commit = args.includes('--commit')
+  if (commit) console.log(`\n--- ${new Date().toISOString()} ---`)
   const arg =
     args.find((a) => /^\d{4}-\d{2}(-\d{2})?$/.test(a)) ?? today().slice(0, 7)
   const [from, to] = range(arg)
@@ -422,6 +572,21 @@ async function selfcheck() {
   assert.deepEqual(range('2026-07'), ['2026-07-01', '2026-07-31'])
   assert.deepEqual(range('2026-02'), ['2026-02-01', '2026-02-28'])
   assert.deepEqual(range('2026-07-15'), ['2026-07-15', '2026-07-15'])
+  assert.deepEqual(workdays('2026-08-28', '2026-09-02'), [
+    '2026-08-28',
+    '2026-08-31',
+    '2026-09-01',
+    '2026-09-02',
+  ])
+  assert.deepEqual(
+    underreported(
+      { '2026-09-01': { secs: 7200 }, '2026-09-02': { secs: 28800 } },
+      '2026-09-01',
+      '2026-09-02',
+      28800,
+    ),
+    ['2026-09-01'],
+  )
   assert.deepEqual(await collect(fake, 'u1', ...range('2026-07')), {
     '2026-07-01': { secs: 6300, keys: ['WP-1', 'WP-2'] },
   })
@@ -449,10 +614,19 @@ async function selfcheck() {
 const args = process.argv.slice(2)
 const plain = args.includes('--dry-run') || args.includes('--plain')
 const interactive = process.stdin.isTTY && !args.includes('--commit') && !plain
-await (args.includes('--selfcheck')
-  ? selfcheck()
-  : args[0] === 'setup'
-    ? setup()
-    : interactive
-      ? tui(args)
-      : run(args))
+try {
+  await (args.includes('--selfcheck')
+    ? selfcheck()
+    : args[0] === 'setup'
+      ? setup()
+      : args.includes('--remind')
+        ? remind()
+        : args.includes('--status')
+          ? pollStatus()
+          : interactive
+            ? tui(args)
+            : run(args))
+} catch (e) {
+  if (args.includes('--commit')) console.error(`niepowodzenie: ${e.message}`)
+  throw e
+}

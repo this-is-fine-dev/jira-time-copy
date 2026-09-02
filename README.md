@@ -1,125 +1,149 @@
 # jira-time-copy
 
-Przepisuje czas zaraportowany w jednej Jirze do zbiorczego zadania w drugiej.
+Kopiuje czas zaraportowany w jednej Jirze do zbiorczego zadania w drugiej. Sumuje worklogi
+użytkownika per dzień, wykrywa istniejące wpisy i może działać ręcznie albo automatycznie przez
+`launchd` na macOS.
 
-Typowy przypadek: pracujesz w firmie A, ale jesteś wystawiony do klienta B. Czas raportujesz na
-bieżąco w Jirze klienta, rozbity na dziesiątki zadań — a na koniec miesiąca musisz to samo wyklikać
-u siebie, dzień po dniu, na jednym zbiorczym tasku. Ten skrypt robi to za ciebie: sumuje twoje
-worklogi per dzień i wpisuje jeden worklog dziennie w zadaniu zbiorczym.
+Typowy przypadek: czas raportujesz na bieżąco w Jirze klienta, na wielu zadaniach, a w firmowej
+Jirze musisz wpisać dzienne sumy do jednego zadania. `jira-time-copy` robi to bez ręcznego
+przepisywania.
 
-- działa z **Jira Cloud** (`*.atlassian.net`) i **Jira Server/DC** — w dowolnej kombinacji
-- **nic nie zapisuje bez potwierdzenia** — domyślnie tryb podglądu
-- **nie duplikuje** — dni już zaraportowane wykrywa i pyta, co z nimi zrobić
-- jedna zależność (`@clack/prompts`), reszta to stdlib Node
+## Najważniejsze możliwości
+
+- Jira Cloud i Jira Server/Data Center w dowolnej kombinacji;
+- interaktywny podgląd i wybór dni przed ręcznym zapisem;
+- automatyczna codzienna synchronizacja przez `launchd` na macOS;
+- ochrona przed duplikatami — automatyzacja pomija dni mające już worklog w zadaniu docelowym;
+- natywna aplikacja w pasku menu z czasem źródłowym, statusem synchronizacji i statystykami;
+- odświeżanie dzisiejszego czasu z Jiry źródłowej co 5 minut, bez zapisu;
+- trwałe powiadomienia o pustych lub niepełnych dniach roboczych;
+- konfigurowalna długość pełnego dnia, godzina przypomnienia i godzina synchronizacji;
+- tokeny przechowywane lokalnie w pliku z uprawnieniami `600`.
+
+Szczegóły integracji systemowej: [Automatyzacja na macOS](docs/macos.md).
 
 ## Wymagania
 
-- Node 18+ (używa wbudowanego `fetch`)
-- pnpm (albo npm — wtedy `npm run` zamiast `pnpm`)
-- token do obu Jir (skąd — podpowie kreator)
+- Node.js 18+;
+- pnpm lub npm;
+- token dostępu do obu instancji Jiry;
+- na macOS: Command Line Tools for Xcode, potrzebne do zbudowania małej aplikacji AppKit.
 
-## Instalacja
+## Szybki start
 
 ```bash
 git clone git@github.com:this-is-fine-dev/jira-time-copy.git
 cd jira-time-copy
 pnpm install
-```
-
-## Konfiguracja
-
-```bash
 pnpm configure
 ```
 
-Kreator pyta po kolei o obie Jiry. Po URL-u sam rozpoznaje typ instancji i mówi, skąd wziąć token:
+Kreator:
 
-- **Jira Cloud** — token generujesz na koncie Atlassian, nie w samej Jirze:
-  <https://id.atlassian.com/manage-profile/security/api-tokens> → *Create API token* (zwykły, bez
-  scope). Pyta też o email konta Atlassian — Cloud używa basic auth `email:token`.
-- **Jira Server/DC** — token z profilu: `<adres-jiry>/secure/ViewProfile.jspa` → zakładka
-  *Personal Access Tokens*. Email niepotrzebny.
+1. pyta o adres i dane dostępowe do Jiry źródłowej;
+2. pyta o adres i dane dostępowe do Jiry docelowej;
+3. sprawdza logowanie do obu instancji i dostęp do zadania docelowego;
+4. zapisuje konfigurację do `~/.jira-time-copy.env` z uprawnieniami `600`;
+5. na macOS instaluje aplikację menu, zadania `launchd` i sprawdza powiadomienia.
 
-Na koniec podajesz klucz zbiorczego zadania (np. `TIME-42`) i decydujesz, czy w komentarzu worklogu
-mają lądować klucze zadań źródłowych (domyślnie **nie** — jeśli nie chcesz pokazywać u siebie, nad
-czym konkretnie pracowałeś u klienta).
+Ponowne `pnpm configure` podpowiada zapisane wartości i aktualizuje istniejącą instalację.
 
-Kreator sprawdza dostęp do obu Jir i tytuł zadania docelowego, zanim cokolwiek zapisze. Konfiguracja
-ląduje w `~/.jira-time-copy.env` z prawami `600`. Ponowne `pnpm configure` podpowiada stare wartości
-(Enter = bez zmian).
+### Tokeny Jiry
 
-## Użycie
+- **Jira Cloud** (`*.atlassian.net`) — podaj email konta Atlassian i zwykły API token z
+  <https://id.atlassian.com/manage-profile/security/api-tokens>.
+- **Jira Server/Data Center** — podaj Personal Access Token z profilu użytkownika; email zostaw
+  pusty.
+
+## Użycie z terminala
 
 ```bash
-pnpm start                      # interaktywnie: wybierasz okres, dni i zatwierdzasz zapis
-pnpm start 2026-08              # to samo, z gotowym miesiącem
-pnpm start 2026-08-27           # to samo, dla jednego dnia
-pnpm start 2026-08 --dry-run    # sam podgląd tekstowy, bez pytań i bez zapisu
-pnpm start 2026-08 --commit     # bez pytań: zapisuje, dni z kolizją pomija (cron)
+pnpm start                      # interaktywny wybór okresu, dni i sposobu zapisu
+pnpm start 2026-08              # konkretny miesiąc
+pnpm start 2026-08-27           # konkretny dzień
+pnpm start 2026-08 --dry-run    # podgląd tekstowy bez zapisu
+pnpm start 2026-08 --commit     # zapis bez pytań; kolizje są pomijane
 ```
 
-Bez argumentu daty TUI zapyta: poprzedni miesiąc / bieżący / dzisiaj / inna data.
+Bez daty interaktywny tryb proponuje poprzedni miesiąc, bieżący miesiąc, dzisiaj albo własną datę.
+Tryb interaktywny niczego nie zapisuje przed końcowym potwierdzeniem. Tryb `--commit` służy do
+automatyzacji i zapisuje bez pytania.
 
-Przebieg interaktywny:
+### Kolizje
 
-```
-┌  jira-time-copy → TIME-42
-│
-◇  Znalazłem 12 dni, razem 87.50h
-│
-◆  Które dni przenieść? (spacja = zaznacz, enter = dalej)
-│  ◼ 2026-08-03   8.00h  ABC-201, ABC-198
-│  ◼ 2026-08-04   7.50h  ABC-201
-│  ◻ 2026-08-05   9.00h  w TIME-42 masz juz 8.00h — ABC-205
-```
+Kolizja oznacza, że w zadaniu docelowym istnieje już twój worklog z danego dnia.
 
-Wszystko aż do pytania *„Zapisać X.XXh do TIME-42?"* jest tylko odczytem — odpowiedź **No** albo
-Ctrl+C nie zostawia śladu. Dopiero potwierdzenie wysyła worklogi.
-
-### Dzień, który już masz zaraportowany
-
-Dla każdego takiego dnia TUI pyta osobno:
-
-| Wybór | Co robi |
+| Tryb | Zachowanie |
 |---|---|
-| **Zsumuj** | dopisuje worklog z Jiry źródłowej obok istniejącego (8h + 9h = 17h) |
-| **Pomiń** | nie rusza niczego |
-| **Nadpisz** | kasuje **twoje** worklogi z tego dnia w zadaniu docelowym i wpisuje wersję źródłową |
+| Interaktywny | Pozwala zsumować, pominąć albo nadpisać twoje wpisy z tego dnia. |
+| `--commit` / `launchd` | Pomija cały dzień i zapisuje kolizję w logu. |
 
-Cudzych worklogów skrypt nie dotyka nigdy — filtruje po autorze. Ale *Nadpisz* kasuje wszystkie
-twoje wpisy z tego dnia w tym zadaniu, również te dodane ręcznie z innego powodu.
+Opcja „Nadpisz” usuwa wyłącznie worklogi zalogowanego użytkownika w wybranym dniu i zadaniu
+docelowym. Cudze wpisy oraz Jira źródłowa nigdy nie są modyfikowane.
 
-## Jak to działa
+## Automatyzacja na macOS
 
-1. W Jirze źródłowej leci JQL `worklogAuthor = currentUser() AND worklogDate >= … <= …`, potem dla
-   każdego znalezionego zadania pobierane są worklogi i filtrowane po tobie i zakresie dat.
-2. Sekundy sumują się per dzień (kilka zadań tego samego dnia = jeden wpis).
-3. W zadaniu docelowym powstaje jeden worklog na dzień, ze startem 09:00 UTC.
-4. Przed zapisem pobierane są twoje istniejące worklogi z zadania docelowego — stąd wykrywanie kolizji.
+`pnpm configure` instaluje cztery zadania użytkownika:
 
-## Konfiguracja przez zmienne środowiskowe
+| Zadanie | Domyślnie | Działanie |
+|---|---:|---|
+| Odczyt statusu | co 5 minut | Pobiera dzisiejszy czas z Jiry źródłowej. Tylko odczyt. |
+| Przypomnienie | dni robocze, 16:00 | Alarmuje, gdy dzień ma mniej niż skonfigurowany próg. |
+| Synchronizacja | codziennie, 23:00 | Kopiuje brakujące dni bieżącego miesiąca do Jiry docelowej. |
+| Menu | po zalogowaniu | Pokazuje status i udostępnia ręczną synchronizację. |
 
-Każdą wartość z pliku można nadpisać zmienną o tej samej nazwie (przydatne w CI/cronie):
+Godziny są ustawiane w kreatorze. Na aktualnym komputerze mogą więc różnić się od wartości
+domyślnych z tabeli.
+
+Przypomnienie obejmuje dzisiaj i wcześniejsze dni robocze bieżącego miesiąca. Dla progu `8 h`
+wartość `2 h` wywoła komunikat `2.00/8.00 h`, a `8 h` nie wywoła alarmu. Weekendy są pomijane;
+święta i urlopy nie są obecnie rozpoznawane.
+
+Aplikacja prosi macOS o trwałe alerty. System wymaga jednak, aby użytkownik sam zatwierdził dostęp
+i ewentualnie wybrał styl **Stałe**. Kreator sprawdza faktyczne ustawienie i otwiera odpowiedni
+panel, jeśli wykryje brak zgody albo znikające banery.
+
+Pełny opis menu, agentów, plików, logów i diagnostyki znajduje się w
+[docs/macos.md](docs/macos.md).
+
+## Jak działa synchronizacja
+
+1. W Jirze źródłowej wykonywane jest zapytanie JQL o worklogi bieżącego użytkownika w wybranym
+   zakresie.
+2. Dla znalezionych zadań pobierane są worklogi, filtrowane po użytkowniku i sumowane per dzień.
+3. Z Jiry docelowej pobierane są istniejące wpisy użytkownika w zadaniu zbiorczym.
+4. Dla każdego dnia bez kolizji powstaje jeden worklog z dzienną sumą.
+
+Automatyczna synchronizacja bez podanej daty przetwarza bieżący miesiąc. Dzięki temu może uzupełnić
+nie tylko dzisiaj, ale również wcześniejszy brakujący dzień.
+
+## Konfiguracja
+
+Wartości są przechowywane w `~/.jira-time-copy.env`. Każdą z nich można nadpisać zmienną
+środowiskową o tej samej nazwie.
 
 | Zmienna | Znaczenie |
 |---|---|
-| `SRC_URL`, `DST_URL` | adresy Jiry źródłowej i docelowej |
-| `SRC_EMAIL`, `DST_EMAIL` | email konta Atlassian — **tylko** dla Jira Cloud; pusty = token osobisty (Bearer) |
-| `SRC_TOKEN`, `DST_TOKEN` | tokeny |
-| `DST_ISSUE` | klucz zbiorczego zadania |
-| `COMMENT_KEYS` | `1` = dopisz klucze zadań źródłowych do komentarza worklogu |
-| `JIRA_TIME_COPY_ENV` | inna ścieżka pliku konfiguracyjnego niż `~/.jira-time-copy.env` |
+| `SRC_URL`, `DST_URL` | Adresy Jiry źródłowej i docelowej. |
+| `SRC_EMAIL`, `DST_EMAIL` | Email konta Atlassian dla Jira Cloud; pusty przy tokenie Bearer. |
+| `SRC_TOKEN`, `DST_TOKEN` | Tokeny dostępowe. |
+| `DST_ISSUE` | Klucz zbiorczego zadania w Jirze docelowej. |
+| `COMMENT_KEYS` | `1` dopisuje klucze zadań źródłowych do komentarza worklogu. |
+| `SYNC_TIME` | Godzina automatycznej synchronizacji na macOS, np. `23:00`. |
+| `REMINDER_TIME` | Godzina przypomnienia w dni robocze, np. `16:00`. |
+| `WORKDAY_HOURS` | Próg pełnego dnia, domyślnie `8`. |
+| `JIRA_TIME_COPY_ENV` | Alternatywna ścieżka pliku konfiguracyjnego. |
 
-Przykład wpisu do crona — 1. dnia miesiąca o 10:00 przepisuje poprzedni miesiąc:
+## Linux i inne systemy
+
+Interaktywny oraz bezobsługowy tryb Node.js działają poza macOS. Integracja z paskiem menu,
+`launchd` i natywne powiadomienia są przeznaczone dla macOS.
+
+Przykładowy cron uruchamiający synchronizację pierwszego dnia miesiąca:
 
 ```cron
-# macOS
-0 10 1 * * cd ~/jira-time-copy && pnpm start "$(date -v-1m +\%Y-\%m)" --commit
-# Linux
 0 10 1 * * cd ~/jira-time-copy && pnpm start "$(date -d 'last month' +\%Y-\%m)" --commit
 ```
-
-Bez terminala skrypt nie pyta o nic: zapisuje dni bez kolizji, a te już zaraportowane pomija.
 
 ## Testy
 
@@ -127,10 +151,13 @@ Bez terminala skrypt nie pyta o nic: zapisuje dni bez kolizji, a te już zarapor
 pnpm test
 ```
 
-Sprawdza sumowanie per dzień, zakresy dat, parser konfiguracji i budowanie worklogu — bez sieci.
+Self-check nie łączy się z Jirą. Sprawdza zakresy dat, dni robocze, próg niepełnego dnia, sumowanie
+worklogów, parser konfiguracji i budowanie wpisu docelowego.
 
-## Uwagi
+## Bezpieczeństwo
 
-- Token daje pełny dostęp do twojego konta w Jirze. Trzymaj plik konfiguracyjny lokalnie i nie
-  commituj go — `.gitignore` pilnuje `*.env`.
-- Skrypt nigdy nie kasuje niczego w Jirze **źródłowej** — czyta tylko.
+- plik konfiguracji, stan aplikacji i logi mają uprawnienia `600`;
+- tokeny nie są przekazywane w argumentach procesów ani zapisywane w logach;
+- agent statusu i przypomnienia tylko czytają Jirę źródłową;
+- zapis wykonuje wyłącznie ręcznie zatwierdzona operacja albo zaplanowany agent synchronizacji;
+- Jira źródłowa nigdy nie jest modyfikowana.
