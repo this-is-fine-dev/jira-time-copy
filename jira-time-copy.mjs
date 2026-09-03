@@ -315,28 +315,6 @@ const poster = (dst, issue, withKeys) => (d, secs, keys) =>
 const syncState = (sourceSecs, target) =>
   !target?.secs ? 'add' : target.secs === sourceSecs ? 'synced' : 'collision'
 
-const validateChoices = (choices, days, done) => {
-  const dates = Object.keys(days).sort()
-  if (
-    !Array.isArray(choices) ||
-    choices.length > 31 ||
-    choices.some((x) => !x || typeof x.date !== 'string') ||
-    choices.map((x) => x.date).join() !== dates.join()
-  )
-    throw new Error('Nieprawidłowy plan synchronizacji.')
-  for (const choice of choices) {
-    const state = syncState(days[choice.date].secs, done[choice.date])
-    const allowed =
-      state === 'add' ? ['add', 'skip'] : state === 'collision' ? ['add', 'skip', 'replace'] : ['synced']
-    if (
-      choice.sourceSeconds !== days[choice.date].secs ||
-      choice.targetSeconds !== (done[choice.date]?.secs ?? null) ||
-      !allowed.includes(choice.action)
-    )
-      throw new Error('Dane zmieniły się od podglądu. Odśwież plan i spróbuj ponownie.')
-  }
-}
-
 const fetchBoth = async (cfg, from, to) => {
   const src = jira(cfg.SRC_URL, cfg.SRC_TOKEN, cfg.SRC_EMAIL)
   const dst = jira(cfg.DST_URL, cfg.DST_TOKEN, cfg.DST_EMAIL)
@@ -544,76 +522,6 @@ async function tui(args) {
   p.outro(`${cfg.DST_URL}/browse/${cfg.DST_ISSUE}`)
 }
 
-// --- tryb natywny macOS --------------------------------------------------
-
-async function nativePlan(args) {
-  const arg = args.find((a) => /^\d{4}-\d{2}(-\d{2})?$/.test(a)) ?? today().slice(0, 7)
-  const [from, to] = range(arg)
-  const cfg = config()
-  need(cfg)
-  const { days, done } = await fetchBoth(cfg, from, to)
-  console.log(
-    JSON.stringify({
-      period: arg,
-      issue: cfg.DST_ISSUE,
-      rows: Object.keys(days)
-        .sort()
-        .map((date) => ({
-          date,
-          sourceSeconds: days[date].secs,
-          targetSeconds: done[date]?.secs ?? null,
-          state: syncState(days[date].secs, done[date]),
-        })),
-    }),
-  )
-}
-
-async function nativeApply(args) {
-  console.log(`\n--- ${new Date().toISOString()} ---`)
-  const arg = args.find((a) => /^\d{4}-\d{2}(-\d{2})?$/.test(a)) ?? today().slice(0, 7)
-  const encoded = args[args.indexOf('--native-apply') + 1]
-  let choices
-  try {
-    choices = JSON.parse(encoded)
-  } catch {
-    throw new Error('Nieprawidłowy plan synchronizacji.')
-  }
-  const [from, to] = range(arg)
-  const cfg = config()
-  need(cfg)
-  const { dst, days, done } = await fetchBoth(cfg, from, to)
-  validateChoices(choices, days, done)
-
-  const todo = choices.filter((x) => x.action === 'add' || x.action === 'replace')
-  const sum = todo.reduce((total, x) => total + days[x.date].secs, 0)
-  const add = poster(dst, cfg.DST_ISSUE, cfg.COMMENT_KEYS === '1')
-  for (const { date, action } of choices) {
-    if (action === 'synced') {
-      console.log(`${date}  ${h(days[date].secs)}h  już zsynchronizowane`)
-      continue
-    }
-    if (action === 'skip') {
-      console.log(
-        `${date}  ${h(days[date].secs)}h  ${done[date] ? `KOLIZJA: pominięto (${h(done[date].secs)}h w celu)` : 'pominięto'}`,
-      )
-      continue
-    }
-    console.log(
-      `${date}  ${h(days[date].secs)}h  ${
-        action === 'replace'
-          ? `KOLIZJA: NADPISUJĘ ${h(done[date].secs)}h`
-          : done[date]
-            ? `KOLIZJA: ZSUMOWANO z ${h(done[date].secs)}h`
-            : days[date].keys.join(', ')
-      }`,
-    )
-    if (action === 'replace')
-      for (const id of done[date].ids) await dst(`/issue/${cfg.DST_ISSUE}/worklog/${id}`, null, 'DELETE')
-    await add(date, days[date].secs, days[date].keys)
-  }
-  console.log(`\nzapisano: ${h(sum)}h -> ${cfg.DST_ISSUE} (${arg})`)
-}
-
 // --- tryb bez pytan (cron, potok) ----------------------------------------
 
 async function run(args) {
@@ -711,21 +619,6 @@ async function selfcheck() {
   assert.equal(syncState(3600), 'add')
   assert.equal(syncState(3600, { secs: 3600 }), 'synced')
   assert.equal(syncState(3600, { secs: 1800 }), 'collision')
-  const planDays = { '2026-07-01': { secs: 3600 } }
-  assert.doesNotThrow(() =>
-    validateChoices(
-      [{ date: '2026-07-01', sourceSeconds: 3600, targetSeconds: null, action: 'add' }],
-      planDays,
-      {},
-    ),
-  )
-  assert.throws(() =>
-    validateChoices(
-      [{ date: '2026-07-01', sourceSeconds: 7200, targetSeconds: null, action: 'add' }],
-      planDays,
-      {},
-    ),
-  )
   const sent = []
   const capture = async (path, body) => void sent.push(body)
   await poster(capture, 'AUT-1', false)('2026-07-01', 3600, ['WP-1'])
@@ -747,10 +640,6 @@ try {
     ? selfcheck()
     : args[0] === 'setup'
       ? setup()
-      : args.includes('--native-plan')
-        ? nativePlan(args)
-        : args.includes('--native-apply')
-          ? nativeApply(args)
       : args.includes('--remind')
         ? remind()
         : args.includes('--status')
@@ -759,6 +648,6 @@ try {
             ? tui(args)
             : run(args))
 } catch (e) {
-  if (args.includes('--commit') || args.includes('--native-apply')) console.error(`niepowodzenie: ${e.message}`)
+  if (args.includes('--commit')) console.error(`niepowodzenie: ${e.message}`)
   throw e
 }

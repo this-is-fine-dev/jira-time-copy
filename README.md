@@ -15,8 +15,8 @@ przepisywania.
 - automatyczna codzienna synchronizacja przez `launchd` na macOS;
 - ochrona przed duplikatami — zgodne dni rozpoznaje jako zsynchronizowane, a różnic nie nadpisuje;
 - natywna aplikacja w pasku menu z czasem źródłowym, statusem synchronizacji i statystykami;
-- kompaktowe okno do synchronizacji dnia, bieżącego albo poprzedniego miesiąca;
-- wszystkie decyzje „Zsumuj / Pomiń / Nadpisz” oraz czytelna historia w jednym widoku;
+- uporządkowane menu z ręcznym zapisem, synchronizacją interaktywną i krótką historią;
+- małe okno ustawień godziny zapisu, przypomnienia i długości dnia pracy;
 - odświeżanie dzisiejszego czasu z Jiry źródłowej co 5 minut, bez zapisu;
 - trwałe powiadomienia o pustych lub niepełnych dniach roboczych;
 - konfigurowalna długość pełnego dnia, godzina przypomnienia i godzina synchronizacji;
@@ -79,7 +79,7 @@ Identyczna suma oznacza dzień już zsynchronizowany i nie wymaga działania.
 | Tryb | Zachowanie |
 |---|---|
 | Interaktywny | Pozwala zsumować, pominąć albo nadpisać twoje wpisy z tego dnia. |
-| Aplikacja macOS | Pokazuje wszystkie dni w małym oknie i pozwala ustawić decyzję przy każdej różnicy. |
+| Aplikacja macOS | Otwiera dla wybranego okresu interaktywny tryb „Zsumuj / Pomiń / Nadpisz” w Terminalu. |
 | `--commit` / `launchd` | Pomija różniący się dzień, zapisuje kolizję w logu i pokazuje powiadomienie z przyciskiem „Rozwiąż…”. |
 
 Opcja „Nadpisz” usuwa wyłącznie worklogi zalogowanego użytkownika w wybranym dniu i zadaniu

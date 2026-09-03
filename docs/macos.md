@@ -69,35 +69,41 @@ per dzień i zapisuje brakujące dni w zbiorczym zadaniu Jiry docelowej.
 
 Jeśli suma czasu jest taka sama w obu Jirach, agent rozpoznaje dzień jako już zsynchronizowany.
 Jeśli sumy się różnią, niczego nie nadpisuje: zapisuje kolizję w logu, przechodzi dalej i pokazuje
-powiadomienie z przyciskiem **Rozwiąż…**. Przycisk otwiera plan w kompaktowym oknie aplikacji.
+powiadomienie z przyciskiem **Rozwiąż…**. Przycisk otwiera interaktywną synchronizację bieżącego
+miesiąca w Terminalu.
 
 ### `dev.this-is-fine.jira-time-copy.menu`
 
-Startuje po zalogowaniu użytkownika, utrzymuje ikonę w pasku menu i obsługuje miniokno. Ręczny zapis
-uruchamia ten sam skrypt co agent `sync`, ale dopiero po pobraniu planu i wyborze działań w oknie.
+Startuje po zalogowaniu użytkownika, utrzymuje ikonę w pasku menu i obsługuje okno ustawień. Menu
+może uruchomić agenta `sync` bez pytań albo istniejący interaktywny tryb skryptu w Terminalu.
 
 Zadania kalendarzowe zwykle mają stan `not running` pomiędzy wykonaniami. To prawidłowe — aktywny
 proces pojawia się tylko na czas pracy. Agent menu powinien mieć stan `running`.
 
-## Pasek menu i miniokno
+## Pasek menu i okno ustawień
 
 Menu pokazuje:
 
 - ostatnią synchronizację i jej wynik;
 - dzisiejszy czas w Jirze źródłowej względem progu, np. `6.50 h / 8.00 h`;
-- godzinę ostatniego odczytu statusu.
+- godzinę ostatniego odczytu statusu;
+- czas skopiowany dzisiaj i łącznie od instalacji;
+- aktywne godziny przypomnienia i zapisu oraz liczbę ostatnich różnic.
 
 Dostępne akcje:
 
-- **Pokaż Jira Time Copy** — otwiera małe okno aplikacji;
+- **Synchronizuj teraz** — uruchamia bezobsługowe uzupełnienie bieżącego miesiąca;
+- **Odśwież czas źródłowy** — wymusza odczyt bez czekania na kolejne 5 minut;
+- **Synchronizacja interaktywna** — otwiera w Terminalu dzisiaj, bieżący albo poprzedni miesiąc
+  z decyzjami „Zsumuj / Pomiń / Nadpisz” i końcowym potwierdzeniem;
+- **Ostatnie synchronizacje** — pokazuje pięć ostatnich wyników bez otwierania logu;
+- **Ustawienia harmonogramu** — otwiera małe okno ustawień;
+- **Otwórz pełny log** — diagnostyczny zapis wszystkich automatycznych uruchomień;
 - **Zakończ** — zamyka aplikację menu; `launchd` uruchomi ją ponownie po następnym logowaniu.
 
-Miniokno ma dwa widoki:
-
-- **Synchronizacja** — wybór dzisiaj, bieżącego albo poprzedniego miesiąca, podgląd wszystkich dni,
-  decyzje „Dodaj / Zsumuj / Pomiń / Nadpisz” i jeden przycisk zapisu;
-- **Historia** — ostatnie uruchomienia z datą, wynikiem, liczbą godzin, liczbą różnic i komunikatem
-  błędu. Nie trzeba otwierać pliku tekstowego podczas zwykłej obsługi.
+Okno aplikacji służy wyłącznie do zmiany godziny automatycznego zapisu, godziny przypomnienia i
+progu pełnego dnia. Zapis aktualizuje konfigurację oraz od razu przeładowuje odpowiednie zadania
+`launchd`.
 
 ## Powiadomienia
 
@@ -117,7 +123,7 @@ zgłasza fałszywego sukcesu. macOS nie pozwala aplikacji kliknąć tej opcji za
 
 | Plik | Zawartość |
 |---|---|
-| `~/Library/Logs/jira-time-copy.log` | Pełny log diagnostyczny; skrót ostatnich uruchomień pokazuje miniokno. |
+| `~/Library/Logs/jira-time-copy.log` | Pełny log diagnostyczny; pięć ostatnich uruchomień pokazuje menu. |
 | `~/Library/Logs/jira-time-copy-status.log` | Odczyty dzisiejszego czasu co 5 minut. |
 | `~/Library/Logs/jira-time-copy-reminder.log` | Wyniki sprawdzania niepełnych dni. |
 | `~/Library/Logs/jira-time-copy-menu.log` | Błędy aplikacji paska menu. |
@@ -180,15 +186,17 @@ stylu **Tymczasowe**.
 ### Automatyzacja zgłasza kolizję
 
 To oznacza, że suma czasu dla dnia różni się między Jirami. Agent celowo jej nie zmienia. Kliknij
-**Rozwiąż…** w powiadomieniu albo otwórz miniokno z menu i wybierz „Zsumuj”, „Pomiń” lub
-„Nadpisz”. Identyczne sumy nie są zgłaszane jako kolizje.
+**Rozwiąż…** w powiadomieniu albo wybierz synchronizację interaktywną z menu i odpowiedz
+„Zsumuj”, „Pomiń” lub „Nadpisz”. Identyczne sumy nie są zgłaszane jako kolizje.
 
 ## Zmiana harmonogramu
 
-Uruchom ponownie kreator:
+Zmień godziny i próg w oknie **Ustawienia harmonogramu**. Pełną konfigurację, w tym dane Jiry,
+można nadal odświeżyć kreatorem:
 
 ```bash
 pnpm configure
 ```
 
-Zmiana jest zapisywana w `~/.jira-time-copy.env`, a wszystkie agenty są przeładowywane od razu.
+Zmiana harmonogramu jest zapisywana w `~/.jira-time-copy.env`, a odpowiednie agenty są
+przeładowywane od razu.
