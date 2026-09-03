@@ -7,13 +7,21 @@ private let collisionCategory = "JIRA_TIME_COPY_COLLISION"
 private let resolveCollisionsAction = "RESOLVE_COLLISIONS"
 private let logURL = FileManager.default.homeDirectoryForCurrentUser
   .appendingPathComponent("Library/Logs/jira-time-copy.log")
-private let sourceStatusURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["JIRA_TIME_COPY_STATUS"] ?? "")
+private let statusLogURL = FileManager.default.homeDirectoryForCurrentUser
+  .appendingPathComponent("Library/Logs/jira-time-copy-status.log")
+private let environment = ProcessInfo.processInfo.environment
+private let reportStatusURL = URL(fileURLWithPath: environment["THIS_IS_LOGGED_STATUS"] ?? environment["JIRA_TIME_COPY_STATUS"]
+  ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/jira-time-copy/status.json").path)
 private let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "png")
 private let syncLabel = "dev.this-is-fine.jira-time-copy.sync"
 private let reminderLabel = "dev.this-is-fine.jira-time-copy.reminder"
 private let statusLabel = "dev.this-is-fine.jira-time-copy.status"
-private let configURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["JIRA_TIME_COPY_ENV"]
+private let configURL = URL(fileURLWithPath: environment["THIS_IS_LOGGED_ENV"] ?? environment["JIRA_TIME_COPY_ENV"]
   ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jira-time-copy.env").path)
+private let configKeys = [
+  "SRC_URL", "SRC_EMAIL", "SRC_TOKEN", "SYNC_ENABLED", "DST_URL", "DST_EMAIL", "DST_TOKEN",
+  "DST_ISSUE", "COMMENT_KEYS", "SYNC_TIME", "REMINDER_TIME", "WORKDAY_HOURS",
+]
 
 private func registerNotificationCategories(_ center: UNUserNotificationCenter) {
   center.setNotificationCategories([
@@ -41,7 +49,7 @@ private func deliverNotification(_ body: String, category: String? = nil) -> Boo
       return
     }
     let content = UNMutableNotificationContent()
-    content.title = "Jira Time Copy"
+    content.title = "This Is Logged"
     content.body = body
     content.sound = .default
     if let category { content.categoryIdentifier = category }
@@ -72,10 +80,46 @@ private struct Run {
   var error: String?
 }
 
-private struct SourceStatus: Decodable {
+private struct ReportStatus: Decodable {
   let checkedAt: String
+  let syncEnabled: Bool?
   let seconds: Int?
+  let expectedSeconds: Int?
   let error: String?
+  let targetError: String?
+  let today: PeriodStatus?
+  let yesterday: PeriodStatus?
+  let week: PeriodStatus?
+  let month: PeriodStatus?
+  let monthCapacity: MonthCapacity?
+}
+
+private struct PeriodStatus: Decodable {
+  let from: String
+  let to: String
+  let workingDays: Int
+  let sourceSeconds: Int
+  let targetSeconds: Int?
+  let missing: [MissingDay]
+  let differences: [Difference]?
+}
+
+private struct MissingDay: Decodable {
+  let date: String
+  let sourceSeconds: Int
+}
+
+private struct Difference: Decodable {
+  let date: String
+  let sourceSeconds: Int
+  let targetSeconds: Int
+}
+
+private struct MonthCapacity: Decodable {
+  let workingDays: Int
+  let daysOff: Int
+  let expectedSeconds: Int
+  let reportedSeconds: Int?
 }
 
 private func parseLog(_ text: String) -> [Run] {
@@ -110,10 +154,19 @@ private func clockParts(_ value: String) -> (hour: Int, minute: Int)? {
   return (hour, minute)
 }
 
-private func updatedConfig(_ text: String, sync: String, reminder: String, hours: String) -> String {
+private func menuIcon() -> NSImage? {
+  guard let iconURL, let image = NSImage(contentsOf: iconURL) else { return nil }
+  image.size = NSSize(width: 19, height: 19)
+  image.isTemplate = false
+  return image
+}
+
+private func updatedConfig(_ text: String, sync: String?, reminder: String, hours: String) -> String {
   var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
   if lines.last == "" { lines.removeLast() }
-  for (key, value) in [("SYNC_TIME", sync), ("REMINDER_TIME", reminder), ("WORKDAY_HOURS", hours)] {
+  var settings = [("REMINDER_TIME", reminder), ("WORKDAY_HOURS", hours)]
+  if let sync { settings.append(("SYNC_TIME", sync)) }
+  for (key, value) in settings {
     let prefix = "\(key)="
     if let index = lines.firstIndex(where: { $0.hasPrefix(prefix) }) {
       lines[index] = prefix + value
@@ -128,6 +181,34 @@ private func savedSetting(_ key: String, fallback: String) -> String {
   guard let text = try? String(contentsOf: configURL, encoding: .utf8) else { return fallback }
   let prefix = "\(key)="
   return text.split(separator: "\n").map(String.init).first { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) } ?? fallback
+}
+
+private func readSettings() -> [String: String] {
+  guard let text = try? String(contentsOf: configURL, encoding: .utf8) else { return [:] }
+  var values: [String: String] = [:]
+  for part in text.split(separator: "\n") {
+    let line = String(part)
+    guard !line.hasPrefix("#"), let split = line.firstIndex(of: "=") else { continue }
+    values[String(line[..<split])] = String(line[line.index(after: split)...])
+  }
+  return values
+}
+
+private func serializedSettings(_ values: [String: String]) -> String {
+  "# this-is-logged; EMAIL pusty = token osobisty (Bearer, Jira Server/DC)\n" +
+    "# COMMENT_KEYS=1 dopisuje klucze zadan z Jiry glownej do komentarza worklogu\n" +
+    configKeys.map { "\($0)=\(values[$0] ?? "")" }.joined(separator: "\n") + "\n"
+}
+
+private func normalizedURL(_ value: String) -> String {
+  let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+  return (trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://")
+    ? trimmed : "https://" + trimmed).replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
+}
+
+private func configurationComplete(_ values: [String: String]) -> Bool {
+  guard !values["SRC_URL", default: ""].isEmpty, !values["SRC_TOKEN", default: ""].isEmpty else { return false }
+  return values["SYNC_ENABLED"] != "1" || ["DST_URL", "DST_TOKEN", "DST_ISSUE"].allSatisfy { !values[$0, default: ""].isEmpty }
 }
 
 private func period(monthOffset: Int = 0) -> String {
@@ -145,22 +226,42 @@ private func todayPeriod() -> String {
 
 private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
   private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-  private let status = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-  private let sourceToday = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-  private let copiedToday = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-  private let copiedTotal = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-  private let schedule = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-  private let collisions = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+  private let headerMonthLabel = NSTextField(labelWithString: "")
+  private let headerMonthValue = NSTextField(labelWithString: "—")
+  private let headerMonthDetail = NSTextField(labelWithString: "Czekam na dane")
+  private let headerTodayValue = NSTextField(labelWithString: "—")
+  private let lastSyncStatus = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+  private let todayStatus = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+  private let yesterdayStatus = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+  private let weekStatus = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+  private let monthStatus = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+  private let reminderSchedule = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+  private let syncSchedule = NSMenuItem(title: "", action: nil, keyEquivalent: "")
   private let historyMenu = NSMenu()
+  private let sourceURLField = NSTextField(frame: .zero)
+  private let sourceEmailField = NSTextField(frame: .zero)
+  private let sourceTokenField = NSSecureTextField(frame: .zero)
+  private let syncToggle = NSButton(checkboxWithTitle: "Synchronizuj raporty z drugą Jirą", target: nil, action: nil)
+  private let targetURLField = NSTextField(frame: .zero)
+  private let targetEmailField = NSTextField(frame: .zero)
+  private let targetTokenField = NSSecureTextField(frame: .zero)
+  private let targetIssueField = NSTextField(frame: .zero)
+  private let commentKeysToggle = NSButton(checkboxWithTitle: "Dodawaj klucze zadań do komentarza", target: nil, action: nil)
   private let syncTimeField = NSTextField(frame: .zero)
   private let reminderTimeField = NSTextField(frame: .zero)
   private let workdayHoursField = NSTextField(frame: .zero)
   private let settingsFeedback = NSTextField(labelWithString: " ")
+  private let settingsProgress = NSProgressIndicator(frame: .zero)
+  private var targetBox: NSBox!
+  private var saveButton: NSButton!
   private var panel: NSPanel!
   private var timer: Timer?
-  private var configuredSyncTime = savedSetting("SYNC_TIME", fallback: ProcessInfo.processInfo.environment["JIRA_TIME_COPY_SCHEDULE"] ?? "23:00")
-  private var configuredReminderTime = savedSetting("REMINDER_TIME", fallback: ProcessInfo.processInfo.environment["JIRA_TIME_COPY_REMINDER"] ?? "16:00")
-  private var configuredWorkdayHours = savedSetting("WORKDAY_HOURS", fallback: ProcessInfo.processInfo.environment["JIRA_TIME_COPY_WORKDAY_HOURS"] ?? "8")
+  private var lastStatusKick = Date.distantPast
+  private lazy var normalMenuIcon = menuIcon()
+  private var configuredSyncEnabled = savedSetting("SYNC_ENABLED", fallback: environment["THIS_IS_LOGGED_SYNC_ENABLED"] ?? "0") == "1"
+  private var configuredSyncTime = savedSetting("SYNC_TIME", fallback: environment["THIS_IS_LOGGED_SCHEDULE"] ?? environment["JIRA_TIME_COPY_SCHEDULE"] ?? "23:00")
+  private var configuredReminderTime = savedSetting("REMINDER_TIME", fallback: environment["THIS_IS_LOGGED_REMINDER"] ?? environment["JIRA_TIME_COPY_REMINDER"] ?? "16:00")
+  private var configuredWorkdayHours = savedSetting("WORKDAY_HOURS", fallback: environment["THIS_IS_LOGGED_WORKDAY_HOURS"] ?? environment["JIRA_TIME_COPY_WORKDAY_HOURS"] ?? "8")
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     let center = UNUserNotificationCenter.current()
@@ -170,47 +271,108 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     setupMenu()
     setupSettingsPanel()
     refresh()
-    if CommandLine.arguments.contains("--show-panel") { showSettings() }
-    timer = Timer.scheduledTimer(timeInterval: 30, target: self, selector: #selector(refresh), userInfo: nil, repeats: true)
+    if CommandLine.arguments.contains("--show-panel") || !configurationComplete(readSettings()) { showSettings() }
+    timer = Timer.scheduledTimer(timeInterval: 10, target: self, selector: #selector(refresh), userInfo: nil, repeats: true)
   }
 
   private func setupMenu() {
     let menu = NSMenu()
     menu.delegate = self
-    for line in [status, sourceToday, copiedToday, copiedTotal, schedule, collisions] {
-      line.isEnabled = false
+    menu.minimumWidth = 410
+    menu.autoenablesItems = false
+    menu.addItem(makeHeader())
+    menu.addItem(.separator())
+    menu.addItem(sectionItem("RAPORTY"))
+    for line in [todayStatus, yesterdayStatus, weekStatus, monthStatus] {
+      line.submenu = NSMenu()
       menu.addItem(line)
-      if line === sourceToday { menu.addItem(.separator()) }
     }
     menu.addItem(.separator())
-    menu.addItem(actionItem("Synchronizuj teraz", #selector(runNow), "r"))
-    menu.addItem(actionItem("Odśwież czas źródłowy", #selector(refreshSource), ""))
+    menu.addItem(sectionItem("MONITORING"))
+    reminderSchedule.isEnabled = false
+    menu.addItem(reminderSchedule)
+    menu.addItem(actionItem("Odśwież dane", #selector(refreshReports), ""))
 
-    let interactive = NSMenu()
-    for (title, value) in [
-      ("Dzisiaj…", todayPeriod()),
-      ("Bieżący miesiąc…", period()),
-      ("Poprzedni miesiąc…", period(monthOffset: -1)),
-    ] {
-      let option = actionItem(title, #selector(runInteractive(_:)), "")
-      option.representedObject = value
-      interactive.addItem(option)
+    if configuredSyncEnabled {
+      menu.addItem(.separator())
+      menu.addItem(sectionItem("SYNCHRONIZACJA"))
+      lastSyncStatus.isEnabled = false
+      menu.addItem(lastSyncStatus)
+      syncSchedule.isEnabled = false
+      menu.addItem(syncSchedule)
+      menu.addItem(actionItem("Synchronizuj teraz", #selector(runNow), "r"))
+
+      let interactive = NSMenu()
+      for (title, value) in [
+        ("Dzisiaj…", todayPeriod()),
+        ("Bieżący miesiąc…", period()),
+        ("Poprzedni miesiąc…", period(monthOffset: -1)),
+      ] {
+        let option = actionItem(title, #selector(runInteractive(_:)), "")
+        option.representedObject = value
+        interactive.addItem(option)
+      }
+      let interactiveItem = NSMenuItem(title: "Synchronizacja interaktywna", action: nil, keyEquivalent: "")
+      interactiveItem.submenu = interactive
+      menu.addItem(interactiveItem)
+      let historyItem = NSMenuItem(title: "Ostatnie synchronizacje", action: nil, keyEquivalent: "")
+      historyItem.submenu = historyMenu
+      menu.addItem(historyItem)
     }
-    let interactiveItem = NSMenuItem(title: "Synchronizacja interaktywna", action: nil, keyEquivalent: "")
-    interactiveItem.submenu = interactive
-    menu.addItem(interactiveItem)
 
-    let historyItem = NSMenuItem(title: "Ostatnie synchronizacje", action: nil, keyEquivalent: "")
-    historyItem.submenu = historyMenu
-    menu.addItem(historyItem)
     menu.addItem(.separator())
-    menu.addItem(actionItem("Ustawienia harmonogramu…", #selector(showSettings), ","))
-    menu.addItem(actionItem("Otwórz pełny log", #selector(openLog), "l"))
+    menu.addItem(sectionItem("APLIKACJA"))
+    menu.addItem(actionItem("Ustawienia i połączenia…", #selector(showSettings), ","))
+    menu.addItem(actionItem(configuredSyncEnabled ? "Otwórz log synchronizacji" : "Otwórz log monitoringu", #selector(openLog), "l"))
     menu.addItem(.separator())
     menu.addItem(actionItem("Zakończ", #selector(quit), "q"))
     item.menu = menu
     item.button?.imagePosition = .imageLeading
-    item.button?.toolTip = "Jira Time Copy"
+    item.button?.toolTip = "This Is Logged"
+  }
+
+  private func makeHeader() -> NSMenuItem {
+    let view = NSView(frame: NSRect(x: 0, y: 0, width: 410, height: 96))
+    headerMonthLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+    headerMonthLabel.textColor = .secondaryLabelColor
+    headerMonthValue.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+    headerMonthValue.alignment = .right
+    headerMonthDetail.font = .systemFont(ofSize: 11)
+    headerMonthDetail.textColor = .secondaryLabelColor
+    let todayLabel = NSTextField(labelWithString: "DZISIAJ")
+    todayLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+    todayLabel.textColor = .secondaryLabelColor
+    headerTodayValue.font = .monospacedDigitSystemFont(ofSize: 20, weight: .semibold)
+
+    let monthRow = NSStackView(views: [headerMonthLabel, NSView(), headerMonthValue])
+    monthRow.orientation = .horizontal
+    monthRow.alignment = .centerY
+    let content = NSStackView(views: [todayLabel, headerTodayValue, monthRow, headerMonthDetail])
+    content.orientation = .vertical
+    content.alignment = .leading
+    content.spacing = 3
+    content.setCustomSpacing(9, after: headerTodayValue)
+    content.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(content)
+    NSLayoutConstraint.activate([
+      content.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+      content.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+      content.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
+      monthRow.widthAnchor.constraint(equalTo: content.widthAnchor),
+    ])
+    let menuItem = NSMenuItem()
+    menuItem.view = view
+    return menuItem
+  }
+
+  private func sectionItem(_ title: String) -> NSMenuItem {
+    let menuItem = NSMenuItem()
+    menuItem.attributedTitle = NSAttributedString(string: title, attributes: [
+      .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+      .foregroundColor: NSColor.secondaryLabelColor,
+    ])
+    menuItem.isEnabled = false
+    return menuItem
   }
 
   private func actionItem(_ title: String, _ action: Selector, _ key: String) -> NSMenuItem {
@@ -221,24 +383,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
   private func setupSettingsPanel() {
     panel = NSPanel(
-      contentRect: NSRect(x: 0, y: 0, width: 420, height: 270),
+      contentRect: NSRect(x: 0, y: 0, width: 590, height: 670),
       styleMask: [.titled, .closable, .utilityWindow],
       backing: .buffered,
       defer: false
     )
-    panel.title = "Jira Time Copy"
+    panel.title = "This Is Logged"
     panel.isReleasedWhenClosed = false
     panel.center()
 
     let root = NSStackView()
     root.orientation = .vertical
     root.alignment = .leading
-    root.spacing = 14
+    root.spacing = 12
     root.translatesAutoresizingMaskIntoConstraints = false
     panel.contentView?.addSubview(root)
     NSLayoutConstraint.activate([
-      root.leadingAnchor.constraint(equalTo: panel.contentView!.leadingAnchor, constant: 20),
-      root.trailingAnchor.constraint(equalTo: panel.contentView!.trailingAnchor, constant: -20),
+      root.leadingAnchor.constraint(equalTo: panel.contentView!.leadingAnchor, constant: 22),
+      root.trailingAnchor.constraint(equalTo: panel.contentView!.trailingAnchor, constant: -22),
       root.topAnchor.constraint(equalTo: panel.contentView!.topAnchor, constant: 18),
       root.bottomAnchor.constraint(lessThanOrEqualTo: panel.contentView!.bottomAnchor, constant: -18),
     ])
@@ -258,97 +420,273 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     heading.orientation = .vertical
     heading.alignment = .leading
     heading.spacing = 1
-    let title = NSTextField(labelWithString: "Ustawienia harmonogramu")
+    let title = NSTextField(labelWithString: "Konfiguracja")
     title.font = .systemFont(ofSize: 17, weight: .semibold)
-    let subtitle = NSTextField(labelWithString: "Zadania systemowe launchd")
+    let subtitle = NSTextField(labelWithString: "Monitoring jest zawsze aktywny. Druga Jira jest opcjonalna.")
     subtitle.textColor = .secondaryLabelColor
     heading.addArrangedSubview(title)
     heading.addArrangedSubview(subtitle)
     header.addArrangedSubview(heading)
     root.addArrangedSubview(header)
 
-    for field in [syncTimeField, reminderTimeField, workdayHoursField] {
+    for field in [sourceURLField, sourceEmailField, sourceTokenField, targetURLField, targetEmailField, targetTokenField, targetIssueField] {
+      field.widthAnchor.constraint(equalToConstant: 365).isActive = true
+    }
+    sourceURLField.placeholderString = "https://firma.atlassian.net"
+    sourceEmailField.placeholderString = "Wymagany dla Jira Cloud; pusty dla Server/DC"
+    sourceTokenField.placeholderString = "API token lub Personal Access Token"
+    targetURLField.placeholderString = "https://druga-firma.atlassian.net"
+    targetEmailField.placeholderString = "Wymagany dla Jira Cloud; pusty dla Server/DC"
+    targetTokenField.placeholderString = "API token lub Personal Access Token"
+    targetIssueField.placeholderString = "AUT-123"
+    root.addArrangedSubview(settingsBox("Jira główna", [
+      ("URL", sourceURLField), ("Email", sourceEmailField), ("Token", sourceTokenField),
+    ]))
+
+    syncToggle.target = self
+    syncToggle.action = #selector(toggleSynchronization)
+    root.addArrangedSubview(syncToggle)
+    syncTimeField.alignment = .center
+    syncTimeField.widthAnchor.constraint(equalToConstant: 90).isActive = true
+    targetBox = settingsBox("Jira docelowa", [
+      ("URL", targetURLField), ("Email", targetEmailField), ("Token", targetTokenField),
+      ("Zadanie", targetIssueField), ("Automatyczny zapis", syncTimeField), ("", commentKeysToggle),
+    ])
+    root.addArrangedSubview(targetBox)
+
+    for field in [reminderTimeField, workdayHoursField] {
       field.alignment = .center
       field.widthAnchor.constraint(equalToConstant: 90).isActive = true
     }
     let hoursControl = NSStackView(views: [workdayHoursField, NSTextField(labelWithString: "h")])
     hoursControl.orientation = .horizontal
     hoursControl.spacing = 6
-    let grid = NSGridView(views: [
-      [NSTextField(labelWithString: "Automatyczny zapis"), syncTimeField],
-      [NSTextField(labelWithString: "Przypomnienie"), reminderTimeField],
-      [NSTextField(labelWithString: "Pełny dzień"), hoursControl],
-    ])
-    grid.column(at: 0).xPlacement = .trailing
-    grid.column(at: 1).xPlacement = .leading
-    grid.rowSpacing = 10
-    grid.columnSpacing = 12
-    root.addArrangedSubview(grid)
+    root.addArrangedSubview(settingsBox("Monitoring", [
+      ("Przypomnienie", reminderTimeField), ("Pełny dzień", hoursControl),
+    ]))
 
     settingsFeedback.textColor = .secondaryLabelColor
+    settingsFeedback.lineBreakMode = .byWordWrapping
+    settingsFeedback.maximumNumberOfLines = 2
     root.addArrangedSubview(settingsFeedback)
-    let save = NSButton(title: "Zapisz", target: self, action: #selector(saveSettings))
-    save.keyEquivalent = "\r"
-    let footer = NSStackView(views: [NSView(), save])
+    settingsProgress.style = .spinning
+    settingsProgress.controlSize = .small
+    settingsProgress.isDisplayedWhenStopped = false
+    saveButton = NSButton(title: "Sprawdź i zapisz", target: self, action: #selector(saveSettings))
+    saveButton.keyEquivalent = "\r"
+    let footer = NSStackView(views: [settingsProgress, NSView(), saveButton])
     footer.orientation = .horizontal
     root.addArrangedSubview(footer)
     footer.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+    syncToggle.state = configuredSyncEnabled ? .on : .off
+    toggleSynchronization()
+  }
+
+  private func settingsBox(_ title: String, _ rows: [(String, NSView)]) -> NSBox {
+    let box = NSBox()
+    box.title = title
+    box.titlePosition = .atTop
+    box.boxType = .primary
+    let grid = NSGridView(views: rows.map { [NSTextField(labelWithString: $0.0), $0.1] })
+    grid.column(at: 0).xPlacement = .trailing
+    grid.column(at: 1).xPlacement = .leading
+    grid.rowSpacing = 8
+    grid.columnSpacing = 12
+    grid.translatesAutoresizingMaskIntoConstraints = false
+    box.contentView?.addSubview(grid)
+    NSLayoutConstraint.activate([
+      grid.leadingAnchor.constraint(equalTo: box.contentView!.leadingAnchor, constant: 12),
+      grid.trailingAnchor.constraint(equalTo: box.contentView!.trailingAnchor, constant: -12),
+      grid.topAnchor.constraint(equalTo: box.contentView!.topAnchor, constant: 8),
+      grid.bottomAnchor.constraint(equalTo: box.contentView!.bottomAnchor, constant: -10),
+    ])
+    box.widthAnchor.constraint(equalToConstant: 546).isActive = true
+    return box
+  }
+
+  @objc private func toggleSynchronization() {
+    targetBox.isHidden = syncToggle.state != .on
   }
 
   func menuWillOpen(_ menu: NSMenu) { refresh() }
 
   @objc private func refresh() {
     let text = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
-    let runs = parseLog(text)
-    let completed = runs.compactMap { run in run.hours.map { (run.date, $0) } }
-    let todayHours = completed.filter { Calendar.current.isDateInToday($0.0) }.reduce(0) { $0 + $1.1 }
-    let totalHours = completed.reduce(0) { $0 + $1.1 }
-    let icon: String
+    let runs = configuredSyncEnabled ? parseLog(text) : []
+    var icon = "clock"
 
-    if let last = runs.last {
+    if configuredSyncEnabled, let last = runs.last {
       let formatter = DateFormatter()
       formatter.dateFormat = "dd.MM, HH:mm"
       if last.error != nil {
-        status.title = "Ostatnia synchronizacja nie powiodła się"
+        lastSyncStatus.title = "Ostatnia synchronizacja nie powiodła się"
         icon = "exclamationmark.triangle"
       } else if let hours = last.hours {
-        status.title = "Ostatnio: OK, \(formatter.string(from: last.date)) (\(format(hours)))"
+        lastSyncStatus.title = "Ostatni zapis \(formatter.string(from: last.date)) · \(format(hours))"
         icon = "clock.badge.checkmark"
       } else if Date().timeIntervalSince(last.date) < 600 {
-        status.title = "Synchronizacja trwa…"
+        lastSyncStatus.title = "Synchronizacja trwa…"
         icon = "arrow.triangle.2.circlepath"
       } else {
-        status.title = "Ostatnia synchronizacja nie powiodła się"
+        lastSyncStatus.title = "Ostatnia synchronizacja nie powiodła się"
         icon = "exclamationmark.triangle"
       }
-    } else {
-      status.title = "Jeszcze nie uruchomiono"
-      icon = "clock"
+    } else if configuredSyncEnabled {
+      lastSyncStatus.title = "Synchronizacja nie była jeszcze uruchamiana"
     }
 
-    let expectedHours = Double(configuredWorkdayHours) ?? 8
-    let source = try? JSONDecoder().decode(SourceStatus.self, from: Data(contentsOf: sourceStatusURL))
-    if let source, source.error == nil, let seconds = source.seconds, let checked = isoDate(source.checkedAt) {
+    let status = try? JSONDecoder().decode(ReportStatus.self, from: Data(contentsOf: reportStatusURL))
+    let now = Date()
+    let statusIsStale = status.flatMap { isoDate($0.checkedAt) }.map { now.timeIntervalSince($0) >= 55 } ?? true
+    if statusIsStale, now.timeIntervalSince(lastStatusKick) >= 55 {
+      lastStatusKick = now
+      runAgent(statusLabel)
+    }
+    let showTarget = status?.syncEnabled ?? configuredSyncEnabled
+    renderHeader(status)
+    if let status, status.error == nil, let checked = isoDate(status.checkedAt) {
       let formatter = DateFormatter()
       formatter.dateFormat = "HH:mm"
-      sourceToday.title = "Dzisiaj: \(format(Double(seconds) / 3600)) / \(format(expectedHours)) · \(formatter.string(from: checked))"
-      item.button?.title = " \(format(Double(seconds) / 3600))"
+      let expected = status.expectedSeconds ?? Int((Double(configuredWorkdayHours) ?? 8) * 3600)
+      if let today = status.today {
+        renderPeriod(todayStatus, label: "Dzisiaj", value: today, expected: expected, showTarget: showTarget)
+        todayStatus.title += " · \(formatter.string(from: checked))"
+        item.button?.title = " \(formatSeconds(today.sourceSeconds)) h"
+      } else {
+        todayStatus.title = "Dzisiaj · \(formatSeconds(status.seconds ?? 0)) h · \(formatter.string(from: checked))"
+        setDetails(todayStatus, ["Ostatni odczyt: \(formatter.string(from: checked))"])
+        item.button?.title = " \(formatSeconds(status.seconds ?? 0)) h"
+      }
+      if let yesterday = status.yesterday {
+        renderPeriod(yesterdayStatus, label: "Wczoraj", value: yesterday, expected: expected, showTarget: showTarget)
+      } else {
+        setWaiting(yesterdayStatus, label: "Wczoraj")
+      }
+      if let week = status.week {
+        renderPeriod(weekStatus, label: "Tydzień", value: week, expected: expected, showTarget: showTarget)
+      } else {
+        setWaiting(weekStatus, label: "Tydzień")
+      }
+      if let month = status.month {
+        renderPeriod(monthStatus, label: "Miesiąc", value: month, expected: expected, showTarget: showTarget)
+      } else {
+        setWaiting(monthStatus, label: "Miesiąc")
+      }
     } else {
-      sourceToday.title = source?.error == nil ? "Jira źródłowa: jeszcze nie sprawdzono" : "Jira źródłowa: brak połączenia"
+      todayStatus.title = status?.error == nil ? "Dzisiaj · czekam na dane" : "Dzisiaj · brak połączenia"
+      setDetails(todayStatus, [status?.error == nil ? "Czekam na pierwszy odczyt." : "Nie udało się pobrać danych z Jiry."])
+      for (line, label) in [(yesterdayStatus, "Wczoraj"), (weekStatus, "Tydzień"), (monthStatus, "Miesiąc")] {
+        line.title = "\(label) · brak danych"
+        setDetails(line, ["Nie udało się pobrać danych z Jiry."])
+      }
       item.button?.title = ""
     }
-    copiedToday.title = "Skopiowano dzisiaj: \(format(todayHours))"
-    copiedTotal.title = "Łącznie od instalacji: \(format(totalHours))"
-    schedule.title = "Harmonogram: przypomnienie \(configuredReminderTime) · zapis \(configuredSyncTime)"
-    collisions.title = "Różnice ostatnio: \(runs.last?.collisions ?? 0)"
-    renderHistory(runs)
-    if let iconURL, let image = NSImage(contentsOf: iconURL) {
-      image.size = NSSize(width: 19, height: 19)
-      image.isTemplate = false
+    reminderSchedule.title = "Przypomnienie \(configuredReminderTime)"
+    if configuredSyncEnabled {
+      syncSchedule.title = "Automatyczny zapis \(configuredSyncTime)"
+      renderHistory(runs)
+    }
+    if let image = normalMenuIcon {
       item.button?.image = image
     } else {
-      item.button?.image = NSImage(systemSymbolName: icon, accessibilityDescription: status.title)
+      item.button?.image = NSImage(systemSymbolName: icon, accessibilityDescription: "This Is Logged")
     }
+  }
+
+  private func renderHeader(_ status: ReportStatus?) {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "pl_PL")
+    formatter.dateFormat = "LLLL"
+    headerMonthLabel.stringValue = formatter.string(from: Date()).uppercased(with: formatter.locale)
+    guard let status, status.error == nil else {
+      headerMonthValue.stringValue = "—"
+      headerMonthDetail.stringValue = "Brak danych z Jiry"
+      headerTodayValue.stringValue = "Brak danych"
+      return
+    }
+    let expected = status.expectedSeconds ?? Int((Double(configuredWorkdayHours) ?? 8) * 3600)
+    if let capacity = status.monthCapacity {
+      headerMonthValue.stringValue = "\(formatSeconds(capacity.reportedSeconds ?? 0)) / \(formatSeconds(capacity.expectedSeconds)) h"
+    } else {
+      headerMonthValue.stringValue = "—"
+    }
+    headerMonthDetail.stringValue = periodSummary(status.month)
+
+    let today = status.today
+    let todaySeconds = today?.sourceSeconds ?? status.seconds ?? 0
+    if today?.workingDays == 0 {
+      headerTodayValue.stringValue = "\(formatSeconds(todaySeconds)) h · dzień wolny"
+      return
+    }
+    headerTodayValue.stringValue = "\(formatSeconds(todaySeconds)) / \(formatSeconds(expected)) h"
+  }
+
+  private func periodSummary(_ value: PeriodStatus?) -> String {
+    guard let value else { return "Czekam na kontrolę raportów" }
+    guard value.from <= value.to else { return "Brak zakończonych dni do kontroli" }
+    return value.missing.isEmpty ? "Zamknięte dni kompletne" : "Braki w zamkniętych dniach: \(value.missing.count)"
+  }
+
+  private func renderPeriod(_ item: NSMenuItem, label: String, value: PeriodStatus, expected: Int, showTarget: Bool) {
+    if value.from > value.to {
+      item.title = "\(label) · brak zakończonych dni"
+      setDetails(item, ["Kontrola rozpocznie się po zakończeniu pierwszego dnia miesiąca."])
+      return
+    }
+    let expectedTotal = value.workingDays * expected
+    let report = value.missing.isEmpty ? "raport: OK" : "raport: braki"
+    let target = showTarget
+      ? " · " + (value.differences.map { $0.isEmpty ? "cel: OK" : "cel: różnice \($0.count)" } ?? "cel: brak danych")
+      : ""
+    item.title = value.workingDays == 0
+      ? "\(label) · dzień wolny\(target)"
+      : "\(label) · \(formatSeconds(value.sourceSeconds))/\(formatSeconds(expectedTotal)) h · \(report)\(target)"
+
+    var details = ["Zakres: \(shortDate(value.from))–\(shortDate(value.to))"]
+    if value.workingDays == 0 {
+      details.append(value.sourceSeconds == 0
+        ? "Raport: dzień wolny, bez wpisów"
+        : "Raport: dzień wolny, zaraportowano \(formatSeconds(value.sourceSeconds)) h")
+    } else if value.missing.isEmpty {
+      details.append("Raport: wszystkie dni uzupełnione")
+    } else {
+      details += value.missing.map {
+        "Raport \(shortDate($0.date)): \(formatSeconds($0.sourceSeconds))/\(formatSeconds(expected)) h · brakuje \(formatSeconds(max(0, expected - $0.sourceSeconds))) h"
+      }
+    }
+    if showTarget {
+      if let differences = value.differences {
+        details.append(contentsOf: differences.isEmpty
+          ? ["Cel: zgodny z Jirą główną"]
+          : differences.map {
+              "Cel \(shortDate($0.date)): Jira główna \(formatSeconds($0.sourceSeconds)) h · cel \(formatSeconds($0.targetSeconds)) h"
+            })
+      } else {
+        details.append("Cel: nie udało się sprawdzić połączenia")
+      }
+    }
+    setDetails(item, details)
+  }
+
+  private func setWaiting(_ item: NSMenuItem, label: String) {
+    item.title = "\(label) · odświeżam dane…"
+    setDetails(item, [configuredSyncEnabled ? "Czekam na odczyt obu instancji Jiry." : "Czekam na odczyt Jiry."])
+  }
+
+  private func setDetails(_ item: NSMenuItem, _ titles: [String]) {
+    item.submenu?.removeAllItems()
+    for title in titles {
+      let detail = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+      detail.isEnabled = false
+      item.submenu?.addItem(detail)
+    }
+  }
+
+  private func formatSeconds(_ seconds: Int) -> String { String(format: "%.2f", Double(seconds) / 3600) }
+
+  private func shortDate(_ value: String) -> String {
+    let parts = value.split(separator: "-")
+    return parts.count == 3 ? "\(parts[2]).\(parts[1])" : value
   }
 
   private func renderHistory(_ runs: [Run]) {
@@ -356,7 +694,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     formatter.dateFormat = "dd.MM HH:mm"
     historyMenu.removeAllItems()
     for run in runs.suffix(5).reversed() {
-      let result = run.error != nil ? "BŁĄD" : run.hours.map { "OK · \(format($0))" } ?? "nieukończona"
+      let result = run.error != nil ? "BŁĄD" : run.hours.map { format($0) } ?? "nieukończona"
       let collision = run.collisions > 0 ? " · różnice: \(run.collisions)" : ""
       let entry = NSMenuItem(title: "\(formatter.string(from: run.date)) · \(result)\(collision)", action: nil, keyEquivalent: "")
       entry.isEnabled = false
@@ -378,10 +716,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
   }
 
   @objc private func showSettings() {
-    syncTimeField.stringValue = configuredSyncTime
-    reminderTimeField.stringValue = configuredReminderTime
-    workdayHoursField.stringValue = configuredWorkdayHours
-    settingsFeedback.stringValue = " "
+    let values = readSettings()
+    sourceURLField.stringValue = values["SRC_URL"] ?? ""
+    sourceEmailField.stringValue = values["SRC_EMAIL"] ?? ""
+    sourceTokenField.stringValue = values["SRC_TOKEN"] ?? ""
+    targetURLField.stringValue = values["DST_URL"] ?? ""
+    targetEmailField.stringValue = values["DST_EMAIL"] ?? ""
+    targetTokenField.stringValue = values["DST_TOKEN"] ?? ""
+    targetIssueField.stringValue = values["DST_ISSUE"] ?? ""
+    syncToggle.state = (values["SYNC_ENABLED"] == "1" || configuredSyncEnabled) ? .on : .off
+    commentKeysToggle.state = values["COMMENT_KEYS"] == "1" ? .on : .off
+    syncTimeField.stringValue = values["SYNC_TIME"] ?? configuredSyncTime
+    reminderTimeField.stringValue = values["REMINDER_TIME"] ?? configuredReminderTime
+    workdayHoursField.stringValue = values["WORKDAY_HOURS"] ?? configuredWorkdayHours
+    toggleSynchronization()
+    settingsFeedback.textColor = .secondaryLabelColor
+    settingsFeedback.stringValue = configurationComplete(values) ? "Zmiany zostaną sprawdzone w Jirze przed zapisem." : "Uzupełnij Jirę główną, aby uruchomić monitoring."
     NSApplication.shared.activate(ignoringOtherApps: true)
     panel.makeKeyAndOrderFront(nil)
   }
@@ -392,22 +742,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
   }
 
   @objc private func runNow() {
-    status.title = "Uruchamiam synchronizację…"
+    lastSyncStatus.title = "Uruchamiam synchronizację…"
     runAgent(syncLabel)
   }
 
-  @objc private func refreshSource() {
-    sourceToday.title = "Jira źródłowa: odświeżam…"
+  @objc private func refreshReports() {
+    todayStatus.title = "Dzisiaj · odświeżam…"
     runAgent(statusLabel, restart: true)
   }
 
-  @objc private func openLog() { NSWorkspace.shared.open(logURL) }
+  @objc private func openLog() { NSWorkspace.shared.open(configuredSyncEnabled ? logURL : statusLogURL) }
 
   private func runAgent(_ label: String, restart: Bool = false) {
     do {
       try command(["kickstart"] + (restart ? ["-k"] : []) + ["gui/\(getuid())/\(label)"])
     } catch {
-      status.title = "Nie udało się uruchomić zadania launchd"
+      lastSyncStatus.title = "Nie udało się uruchomić zadania launchd"
     }
   }
 
@@ -417,11 +767,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
   private func openInteractive(_ selectedPeriod: String) {
     let env = ProcessInfo.processInfo.environment
-    guard let node = env["JIRA_TIME_COPY_NODE"], let script = env["JIRA_TIME_COPY_SCRIPT"] else { return }
+    let runtime = Bundle.main.resourceURL?.appendingPathComponent("runtime")
+    guard let node = env["THIS_IS_LOGGED_NODE"] ?? env["JIRA_TIME_COPY_NODE"] ?? runtime?.appendingPathComponent("node").path,
+          let script = env["THIS_IS_LOGGED_SCRIPT"] ?? env["JIRA_TIME_COPY_SCRIPT"] ?? runtime?.appendingPathComponent("jira-time-copy.mjs").path else { return }
     let appleScript = """
     on run argv
       set commandLine to quoted form of item 1 of argv & " " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv
-      if item 4 of argv is not "" then set commandLine to "JIRA_TIME_COPY_ENV=" & quoted form of item 4 of argv & " " & commandLine
+      if item 4 of argv is not "" then set commandLine to "THIS_IS_LOGGED_ENV=" & quoted form of item 4 of argv & " " & commandLine
       tell application "Terminal"
         activate
         do script commandLine
@@ -430,60 +782,129 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     """
     let task = Process()
     task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    task.arguments = ["-e", appleScript, node, script, selectedPeriod, env["JIRA_TIME_COPY_ENV"] ?? ""]
+    task.arguments = ["-e", appleScript, node, script, selectedPeriod, env["THIS_IS_LOGGED_ENV"] ?? env["JIRA_TIME_COPY_ENV"] ?? ""]
     try? task.run()
   }
 
   @objc private func saveSettings() {
+    let synchronization = syncToggle.state == .on
+    let sourceURL = normalizedURL(sourceURLField.stringValue)
+    let targetURL = normalizedURL(targetURLField.stringValue)
+    let sourceEmail = sourceEmailField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    let targetEmail = targetEmailField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    let sourceToken = sourceTokenField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    let targetToken = targetTokenField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    let targetIssue = targetIssueField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     let sync = syncTimeField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     let reminder = reminderTimeField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     let hoursText = workdayHoursField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: ".")
-    guard let syncClock = clockParts(sync), let reminderClock = clockParts(reminder),
+    let validURL: (String) -> Bool = { value in
+      guard let url = URL(string: value) else { return false }
+      return ["http", "https"].contains(url.scheme?.lowercased() ?? "") && url.host != nil
+    }
+    guard validURL(sourceURL), !sourceToken.isEmpty else {
+      settingsFeedback.textColor = .systemRed
+      settingsFeedback.stringValue = "Podaj poprawny URL i token Jiry głównej."
+      return
+    }
+    if sourceURL.lowercased().contains(".atlassian.net"), !sourceEmail.contains("@") {
+      settingsFeedback.textColor = .systemRed
+      settingsFeedback.stringValue = "Jira Cloud wymaga emaila konta Atlassian."
+      return
+    }
+    if synchronization && (!validURL(targetURL) || targetToken.isEmpty ||
+      targetIssue.range(of: #"^[A-Z][A-Z0-9]*-\d+$"#, options: .regularExpression) == nil) {
+      settingsFeedback.textColor = .systemRed
+      settingsFeedback.stringValue = "Uzupełnij URL, token i zadanie (np. AUT-123) Jiry docelowej."
+      return
+    }
+    if synchronization && targetURL.lowercased().contains(".atlassian.net") && !targetEmail.contains("@") {
+      settingsFeedback.textColor = .systemRed
+      settingsFeedback.stringValue = "Docelowa Jira Cloud wymaga emaila konta Atlassian."
+      return
+    }
+    guard (!synchronization || clockParts(sync) != nil), clockParts(reminder) != nil,
           let hours = Double(hoursText), hours > 0, hours <= 24 else {
       settingsFeedback.textColor = .systemRed
-      settingsFeedback.stringValue = "Podaj godziny GG:MM i pełny dzień od 0 do 24 h."
+      settingsFeedback.stringValue = "Podaj godziny w formacie GG:MM i pełny dzień od 0 do 24 h."
       return
     }
 
-    let home = FileManager.default.homeDirectoryForCurrentUser
-    let agents = home.appendingPathComponent("Library/LaunchAgents")
-    let syncPlist = agents.appendingPathComponent("\(syncLabel).plist")
-    let reminderPlist = agents.appendingPathComponent("\(reminderLabel).plist")
+    let values = [
+      "SRC_URL": sourceURL, "SRC_EMAIL": sourceEmail, "SRC_TOKEN": sourceToken,
+      "SYNC_ENABLED": synchronization ? "1" : "0",
+      "DST_URL": targetURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : targetURL,
+      "DST_EMAIL": targetEmail, "DST_TOKEN": targetToken, "DST_ISSUE": targetIssue,
+      "COMMENT_KEYS": commentKeysToggle.state == .on ? "1" : "0",
+      "SYNC_TIME": sync, "REMINDER_TIME": reminder, "WORKDAY_HOURS": String(hours),
+    ]
+    guard let runtime = Bundle.main.resourceURL?.appendingPathComponent("runtime") else { return }
+    let node = environment["THIS_IS_LOGGED_NODE"] ?? environment["JIRA_TIME_COPY_NODE"] ?? runtime.appendingPathComponent("node").path
+    let script = environment["THIS_IS_LOGGED_SCRIPT"] ?? environment["JIRA_TIME_COPY_SCRIPT"] ?? runtime.appendingPathComponent("jira-time-copy.mjs").path
+    let installer = runtime.appendingPathComponent("macos/install-agents.mjs").path
+    let content = serializedSettings(values)
+    let temporary = configURL.deletingLastPathComponent().appendingPathComponent(".jira-time-copy.env.\(UUID().uuidString).tmp")
 
-    do {
-      let text = try String(contentsOf: configURL, encoding: .utf8)
-      try updatedConfig(text, sync: sync, reminder: reminder, hours: hoursText).write(to: configURL, atomically: true, encoding: .utf8)
-      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
-      try updatePlist(syncPlist, schedule: ["Hour": syncClock.hour, "Minute": syncClock.minute])
-      try updatePlist(reminderPlist, schedule: (1...5).map { ["Weekday": $0, "Hour": reminderClock.hour, "Minute": reminderClock.minute] })
-      try reloadAgent(syncLabel, plist: syncPlist)
-      try reloadAgent(reminderLabel, plist: reminderPlist)
-      configuredSyncTime = sync
-      configuredReminderTime = reminder
-      configuredWorkdayHours = hoursText
-      settingsFeedback.textColor = .systemGreen
-      settingsFeedback.stringValue = "Zapisano i przeładowano launchd."
-      refresh()
-    } catch {
-      settingsFeedback.textColor = .systemRed
-      settingsFeedback.stringValue = "Nie udało się zapisać: \(error.localizedDescription)"
+    saveButton.isEnabled = false
+    settingsProgress.startAnimation(nil)
+    settingsFeedback.textColor = .secondaryLabelColor
+    settingsFeedback.stringValue = synchronization ? "Sprawdzam obie Jiry…" : "Sprawdzam Jirę główną…"
+    DispatchQueue.global(qos: .userInitiated).async {
+      defer { try? FileManager.default.removeItem(at: temporary) }
+      do {
+        guard [node, script, installer].allSatisfy({ FileManager.default.isExecutableFile(atPath: $0) || FileManager.default.fileExists(atPath: $0) }) else {
+          throw NSError(domain: "ThisIsLogged", code: 2, userInfo: [NSLocalizedDescriptionKey: "Aplikacja jest niekompletna. Zainstaluj ją ponownie z paczki DMG."])
+        }
+        try content.write(to: temporary, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+        _ = try self.runProcess(node, [script, "--check-config"], environment: ["THIS_IS_LOGGED_ENV": temporary.path])
+        try content.write(to: configURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+        _ = try self.runProcess(node, [installer, configURL.path, Bundle.main.bundleURL.path])
+        let persistent = deliverNotification("Konfiguracja działa. Monitoring raportów jest aktywny.") && persistentNotificationsEnabled()
+        DispatchQueue.main.async {
+          self.configuredSyncEnabled = synchronization
+          self.configuredSyncTime = sync
+          self.configuredReminderTime = reminder
+          self.configuredWorkdayHours = String(hours)
+          self.setupMenu()
+          self.saveButton.isEnabled = true
+          self.settingsProgress.stopAnimation(nil)
+          self.settingsFeedback.textColor = persistent ? .systemGreen : .systemOrange
+          self.settingsFeedback.stringValue = persistent
+            ? "Gotowe. Monitoring uruchomiony."
+            : "Gotowe. W powiadomieniach wybierz styl „Stałe”."
+          if !persistent, let settings = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+            NSWorkspace.shared.open(settings)
+          }
+          self.refreshReports()
+        }
+      } catch {
+        DispatchQueue.main.async {
+          self.saveButton.isEnabled = true
+          self.settingsProgress.stopAnimation(nil)
+          self.settingsFeedback.textColor = .systemRed
+          self.settingsFeedback.stringValue = "Nie udało się zapisać: \(error.localizedDescription)"
+        }
+      }
     }
   }
 
-  private func updatePlist(_ url: URL, schedule: Any) throws {
-    let data = try Data(contentsOf: url)
-    guard var plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
-      throw NSError(domain: "JiraTimeCopy", code: 1, userInfo: [NSLocalizedDescriptionKey: "Nieprawidłowy plik \(url.lastPathComponent)"])
+  private func runProcess(_ executable: String, _ arguments: [String], environment additions: [String: String] = [:]) throws -> String {
+    let task = Process()
+    let output = Pipe()
+    task.executableURL = URL(fileURLWithPath: executable)
+    task.arguments = arguments
+    task.environment = ProcessInfo.processInfo.environment.merging(additions) { _, new in new }
+    task.standardOutput = output
+    task.standardError = output
+    try task.run()
+    task.waitUntilExit()
+    let message = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    if task.terminationStatus != 0 {
+      throw NSError(domain: "ThisIsLogged", code: Int(task.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? "Proces konfiguracji zakończył się błędem." : message])
     }
-    plist["StartCalendarInterval"] = schedule
-    let output = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-    try output.write(to: url, options: .atomic)
-  }
-
-  private func reloadAgent(_ label: String, plist: URL) throws {
-    let domain = "gui/\(getuid())"
-    try? command(["bootout", "\(domain)/\(label)"])
-    try command(["bootstrap", domain, plist.path])
+    return message
   }
 
   private func command(_ arguments: [String]) throws {
@@ -493,19 +914,29 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     try task.run()
     task.waitUntilExit()
     if task.terminationStatus != 0 {
-      throw NSError(domain: "JiraTimeCopy", code: Int(task.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "launchctl zakończył się błędem"])
+      throw NSError(domain: "ThisIsLogged", code: Int(task.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "launchctl zakończył się błędem"])
     }
   }
 
-  func layoutSelfcheck() {
+  func layoutSelfcheck(syncEnabled: Bool) {
+    configuredSyncEnabled = syncEnabled
+    setupMenu()
     setupSettingsPanel()
+    let header = item.menu?.items.first?.view
+    header?.layoutSubtreeIfNeeded()
     panel.contentView?.layoutSubtreeIfNeeded()
     let bounds = panel.contentView!.bounds
+    let sourceFrame = panel.contentView!.convert(sourceURLField.bounds, from: sourceURLField)
     let syncFrame = panel.contentView!.convert(syncTimeField.bounds, from: syncTimeField)
-    let save = panel.contentView!.subviewsRecursive.first { ($0 as? NSButton)?.title == "Zapisz" }
-    let saveFrame = save.map { panel.contentView!.convert($0.bounds, from: $0) } ?? .zero
+    let saveFrame = panel.contentView!.convert(saveButton.bounds, from: saveButton)
     precondition(
-      bounds.contains(syncFrame) && bounds.contains(saveFrame) && syncFrame.height > 0 && saveFrame.height > 0,
+      item.menu?.minimumWidth == 410 && header?.frame.height == 96 &&
+        headerMonthValue.frame.height > 0 && headerTodayValue.frame.height > 0 &&
+        item.menu?.items.contains(where: { $0.attributedTitle?.string == "RAPORTY" }) == true &&
+        item.menu?.items.contains(where: { $0.attributedTitle?.string == "SYNCHRONIZACJA" }) == syncEnabled &&
+        bounds.contains(sourceFrame) && sourceFrame.height > 0 &&
+        (!syncEnabled || bounds.contains(syncFrame) && syncFrame.height > 0) &&
+        bounds.contains(saveFrame) && saveFrame.height > 0,
       "Opcje są poza widocznym obszarem"
     )
     print("ok")
@@ -551,7 +982,12 @@ if let notify = CommandLine.arguments.firstIndex(of: "--notify"), CommandLine.ar
 } else if CommandLine.arguments.contains("--layout-selfcheck") {
   _ = NSApplication.shared
   let delegate = AppDelegate()
-  delegate.layoutSelfcheck()
+  delegate.layoutSelfcheck(syncEnabled: true)
+  withExtendedLifetime(delegate) {}
+} else if CommandLine.arguments.contains("--layout-selfcheck-monitoring") {
+  _ = NSApplication.shared
+  let delegate = AppDelegate()
+  delegate.layoutSelfcheck(syncEnabled: false)
   withExtendedLifetime(delegate) {}
 } else if CommandLine.arguments.contains("--selfcheck") {
   let runs = parseLog("""
@@ -570,11 +1006,13 @@ if let notify = CommandLine.arguments.firstIndex(of: "--notify"), CommandLine.ar
   precondition(runs[0].hours == 8, "first: \(runs[0])")
   precondition(runs[1].hours == 0 && runs[1].collisions == 1, "second: \(runs[1])")
   precondition(runs[2].error == "fetch failed", "third: \(runs[2])")
-  let source = try! JSONDecoder().decode(SourceStatus.self, from: Data(#"{"checkedAt":"2026-09-02T14:00:00.000Z","seconds":12600}"#.utf8))
-  precondition(source.seconds == 12600 && source.error == nil, "source: \(source)")
+  let status = try! JSONDecoder().decode(ReportStatus.self, from: Data(#"{"checkedAt":"2026-09-02T14:00:00.000Z","syncEnabled":false,"seconds":12600,"expectedSeconds":28800,"today":{"from":"2026-09-02","to":"2026-09-02","workingDays":1,"sourceSeconds":12600,"targetSeconds":null,"missing":[{"date":"2026-09-02","sourceSeconds":12600}],"differences":null},"monthCapacity":{"workingDays":22,"daysOff":8,"expectedSeconds":633600}}"#.utf8))
+  precondition(status.syncEnabled == false && status.today?.missing.count == 1 && status.today?.differences == nil && status.monthCapacity?.workingDays == 22, "status")
   precondition(clockParts("23:05")?.hour == 23 && clockParts("24:00") == nil, "clock")
   let config = updatedConfig("SRC_TOKEN=secret\nSYNC_TIME=18:00\n", sync: "19:15", reminder: "16:00", hours: "8")
   precondition(config.contains("SRC_TOKEN=secret") && config.contains("SYNC_TIME=19:15") && config.contains("REMINDER_TIME=16:00"), "config")
+  let monitoringConfig = updatedConfig("SRC_TOKEN=secret\nSYNC_TIME=18:00\n", sync: nil, reminder: "17:00", hours: "7.5")
+  precondition(monitoringConfig.contains("SYNC_TIME=18:00") && monitoringConfig.contains("REMINDER_TIME=17:00"), "monitoring config")
   print("ok")
 } else {
   let app = NSApplication.shared

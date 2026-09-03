@@ -1,13 +1,15 @@
 {
-  "name": "jira-time-copy",
+  "name": "this-is-logged",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "bin": {
+    "this-is-logged": "./jira-time-copy.mjs",
     "jira-time-copy": "./jira-time-copy.mjs"
   },
   "scripts": {
     "configure": "node jira-time-copy.mjs setup",
+    "package:macos": "node macos/install.mjs --dmg",
     "start": "node jira-time-copy.mjs",
     "test": "node jira-time-copy.mjs --selfcheck"
   },

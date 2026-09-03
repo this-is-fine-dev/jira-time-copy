@@ -1,202 +1,203 @@
-# Automatyzacja na macOS
+# This Is Logged na macOS
 
-Ten przewodnik opisuje instalację systemową `jira-time-copy`: aplikację w pasku menu, zadania
-`launchd`, przypomnienia, logi i diagnostykę.
+Ten przewodnik opisuje aplikację w pasku menu, monitoring raportów, opcjonalną synchronizację,
+zadania `launchd`, powiadomienia i diagnostykę.
 
 ## Instalacja i aktualizacja
 
-```bash
-pnpm configure
+Otwórz `This Is Logged.dmg`, przeciągnij aplikację do katalogu **Applications** i uruchom ją.
+Pierwszy start automatycznie pokazuje natywny konfigurator. Nie jest potrzebny Terminal, Node.js,
+ani pnpm.
+
+```text
+/Applications/This Is Logged.app
 ```
 
-Kreator zapisuje konfigurację Jiry, kompiluje małą aplikację AppKit i instaluje ją w katalogu
-użytkownika. Nie wymaga uprawnień administratora ani wpisów w `crontab`.
+Konfigurator zachowuje dotychczasowe wartości, sprawdza wymagane połączenia przed zapisem i
+uzgadnia właściwy zestaw agentów `launchd`. Wszystkie agenty używają backendu oraz runtime Node
+dołączonego do aplikacji, dlatego repozytorium może zostać usunięte po instalacji.
 
-Ponowne uruchomienie kreatora:
+## Tryby
 
-- zachowuje dotychczasowe wartości jako odpowiedzi domyślne;
-- ponownie sprawdza dostęp do obu Jir;
-- aktualizuje godziny i próg pełnego dnia;
-- przebudowuje aplikację menu;
-- przeładowuje wszystkie zadania `launchd`;
-- wysyła testowe powiadomienie.
+### Monitoring
 
-## Co jest instalowane
+Wymaga tylko Jiry głównej. Aplikacja odczytuje worklogi, liczy kompletność raportów i przypomina o
+brakach. Nie łączy się z drugą Jirą i nie instaluje procesu wykonującego zapis.
+
+### Monitoring i synchronizacja
+
+Dodatkowo wymaga Jiry docelowej oraz zbiorczego zadania. Oprócz monitoringu porównuje dzienne sumy
+i może je kopiować automatycznie lub interaktywnie.
+
+## Pliki
+
+Techniczne ścieżki zachowują poprzednią nazwę, aby aktualizacja nie utraciła konfiguracji i
+historii.
 
 | Element | Lokalizacja |
 |---|---|
 | Konfiguracja | `~/.jira-time-copy.env` |
-| Aplikacja | `~/Applications/Jira Time Copy.app` |
-| Stan dzisiejszego czasu | `~/Library/Application Support/jira-time-copy/status.json` |
+| Aplikacja | `/Applications/This Is Logged.app` |
+| Stan | `~/Library/Application Support/jira-time-copy/status.json` |
 | Agenty | `~/Library/LaunchAgents/dev.this-is-fine.jira-time-copy.*.plist` |
 | Logi | `~/Library/Logs/jira-time-copy*.log` |
 
 Konfiguracja, stan i logi mają uprawnienia `600`.
 
-## Zadania launchd
+## Zadania `launchd`
 
-### `dev.this-is-fine.jira-time-copy.status`
+### Status — zawsze
 
-Uruchamia się po instalacji i później co 300 sekund. Pobiera wyłącznie dzisiejsze worklogi
-z Jiry źródłowej, sumuje je i zapisuje mały plik stanu dla aplikacji menu.
+`dev.this-is-fine.jira-time-copy.status` startuje po instalacji, a później co 60 sekund.
 
-- Jira źródłowa: odczyt;
-- Jira docelowa: brak połączenia;
-- przy błędzie: menu pokazuje nieudane sprawdzenie, a szczegóły trafiają do logu.
+Sprawdza:
 
-### `dev.this-is-fine.jira-time-copy.reminder`
+- dzisiaj;
+- wczoraj;
+- zakończone dni aktualnego tygodnia;
+- w poniedziałek cały poprzedni tydzień;
+- zakończone dni bieżącego miesiąca;
+- miesięczny plan oraz sumę zaraportowaną do dzisiaj.
 
-Uruchamia się od poniedziałku do piątku o godzinie ustawionej jako `REMINDER_TIME`. Sprawdza dni
-robocze od początku bieżącego miesiąca do dzisiaj.
+W trybie synchronizacji dodatkowo czyta cel i wylicza różnice. Awaria celu nie usuwa poprawnego
+stanu Jiry głównej.
 
-Powiadomienie pojawia się, gdy którykolwiek dzień ma mniej niż `WORKDAY_HOURS`:
+### Przypomnienie — zawsze
 
-| Czas przy progu 8 h | Wynik |
+`dev.this-is-fine.jira-time-copy.reminder` działa od poniedziałku do piątku o `REMINDER_TIME`.
+
+| Czas przy normie 8 h | Wynik |
 |---:|---|
 | `0.00 h` | Powiadomienie o pustym dniu. |
-| `2.00 h` | Powiadomienie o niepełnym dniu `2.00/8.00 h`. |
+| `2.00 h` | Powiadomienie `2.00/8.00 h`. |
 | `8.00 h` lub więcej | Brak powiadomienia. |
 
-Komunikat wymienia również niepełne wcześniejsze dni. Weekendy są pomijane. Nie ma integracji
-z kalendarzem świąt ani urlopów, więc taki dzień może wymagać ręcznego zignorowania alertu.
+Komunikat wymienia również wcześniejsze niepełne dni miesiąca. Weekendy i polskie święta ustawowe
+są pomijane. Urlopy wymagają osobnego kalendarza.
 
-Jeśli Jira źródłowa jest niedostępna, pojawia się osobne powiadomienie o błędzie sprawdzenia.
+### Menu — zawsze
 
-### `dev.this-is-fine.jira-time-copy.sync`
+`dev.this-is-fine.jira-time-copy.menu` utrzymuje ikonę w pasku, czyta `status.json`, obsługuje
+ustawienia i powiadomienia.
 
-Uruchamia się codziennie o `SYNC_TIME` z opcją `--commit`. Pobiera bieżący miesiąc, sumuje czas
-per dzień i zapisuje brakujące dni w zbiorczym zadaniu Jiry docelowej.
+### Synchronizacja — opcjonalna
 
-Jeśli suma czasu jest taka sama w obu Jirach, agent rozpoznaje dzień jako już zsynchronizowany.
-Jeśli sumy się różnią, niczego nie nadpisuje: zapisuje kolizję w logu, przechodzi dalej i pokazuje
-powiadomienie z przyciskiem **Rozwiąż…**. Przycisk otwiera interaktywną synchronizację bieżącego
-miesiąca w Terminalu.
+`dev.this-is-fine.jira-time-copy.sync` istnieje tylko przy `SYNC_ENABLED=1`. O ustawionej godzinie
+kopiuje brakujące dzienne sumy bieżącego miesiąca do zadania docelowego.
 
-### `dev.this-is-fine.jira-time-copy.menu`
+Wyłączenie dodatku powoduje `bootout` agenta i usunięcie jego plista. Stary log i dane celu zostają
+zachowane, ale nic ich nie uruchamia.
 
-Startuje po zalogowaniu użytkownika, utrzymuje ikonę w pasku menu i obsługuje okno ustawień. Menu
-może uruchomić agenta `sync` bez pytań albo istniejący interaktywny tryb skryptu w Terminalu.
+## Menu
 
-Zadania kalendarzowe zwykle mają stan `not running` pomiędzy wykonaniami. To prawidłowe — aktywny
-proces pojawia się tylko na czas pracy. Agent menu powinien mieć stan `running`.
+Nagłówek zawsze pokazuje:
 
-## Pasek menu i okno ustawień
+- aktualny miesiąc;
+- godziny zaraportowane względem planu;
+- kompletność zamkniętych dni;
+- raport dzisiejszy względem dziennej normy.
 
-Menu pokazuje:
+Sekcja **Raporty** pozwala rozwinąć konkretny zakres i zobaczyć daty braków. W trybie jednej Jiry
+nie pojawiają się żadne ostrzeżenia o niesprawdzonym celu.
 
-- ostatnią synchronizację i jej wynik;
-- dzisiejszy czas w Jirze źródłowej względem progu, np. `6.50 h / 8.00 h`;
-- godzinę ostatniego odczytu statusu;
-- czas skopiowany dzisiaj i łącznie od instalacji;
-- aktywne godziny przypomnienia i zapisu oraz liczbę ostatnich różnic.
+Sekcja **Monitoring** pokazuje harmonogram przypomnienia i pozwala wymusić odczyt.
 
-Dostępne akcje:
+Sekcja **Synchronizacja** pojawia się wyłącznie po skonfigurowaniu drugiej Jiry. Zawiera:
 
-- **Synchronizuj teraz** — uruchamia bezobsługowe uzupełnienie bieżącego miesiąca;
-- **Odśwież czas źródłowy** — wymusza odczyt bez czekania na kolejne 5 minut;
-- **Synchronizacja interaktywna** — otwiera w Terminalu dzisiaj, bieżący albo poprzedni miesiąc
-  z decyzjami „Zsumuj / Pomiń / Nadpisz” i końcowym potwierdzeniem;
-- **Ostatnie synchronizacje** — pokazuje pięć ostatnich wyników bez otwierania logu;
-- **Ustawienia harmonogramu** — otwiera małe okno ustawień;
-- **Otwórz pełny log** — diagnostyczny zapis wszystkich automatycznych uruchomień;
-- **Zakończ** — zamyka aplikację menu; `launchd` uruchomi ją ponownie po następnym logowaniu.
+- ostatni wynik automatycznego zapisu;
+- harmonogram;
+- synchronizację natychmiastową;
+- tryb interaktywny dla dnia lub miesiąca;
+- pięć ostatnich uruchomień.
 
-Okno aplikacji służy wyłącznie do zmiany godziny automatycznego zapisu, godziny przypomnienia i
-progu pełnego dnia. Zapis aktualizuje konfigurację oraz od razu przeładowuje odpowiednie zadania
-`launchd`.
+W sekcji **Aplikacja** można otworzyć ustawienia, uruchomić kreator połączeń, zobaczyć właściwy log
+i zakończyć aplikację.
+
+## Ustawienia
+
+Okno **Ustawienia i połączenia** obejmuje Jirę główną, godzinę przypomnienia i długość pełnego dnia.
+Przełącznik synchronizacji odsłania Jirę docelową, zadanie, komentarze oraz godzinę automatycznego
+zapisu. Tokeny są polami chronionymi.
+
+Przycisk **Sprawdź i zapisz** najpierw loguje się do wymaganych instancji oraz sprawdza zadanie
+docelowe. Dopiero poprawna konfiguracja zastępuje plik z sekretami i przeładowuje `launchd`.
 
 ## Powiadomienia
 
-Konfigurator rejestruje aplikację, prosi o zgodę i wysyła test. Ustawienie trwałego alertu jest
-deklarowane przez aplikację, ale macOS pozwala użytkownikowi je nadpisać.
+Tytuł powiadomień to **This Is Logged**.
+
+Monitoring może zgłosić:
+
+- pusty lub niepełny dzisiejszy raport;
+- braki z poprzednich dni;
+- błąd połączenia z Jirą główną.
+
+Synchronizacja może dodatkowo zgłosić błąd celu lub różnice wymagające ręcznej decyzji.
 
 Jeśli komunikat znika automatycznie:
 
-1. otwórz **Ustawienia systemowe → Powiadomienia → Jira Time Copy**;
+1. otwórz **Ustawienia systemowe → Powiadomienia → This Is Logged**;
 2. włącz powiadomienia;
-3. w sekcji **Styl alertów** wybierz **Stałe** zamiast **Tymczasowe**.
+3. wybierz styl **Stałe** zamiast **Tymczasowe**.
 
-Kreator odczytuje faktyczny styl z systemu. Jeśli nie jest trwały, otwiera panel ustawień i nie
-zgłasza fałszywego sukcesu. macOS nie pozwala aplikacji kliknąć tej opcji za użytkownika.
+Kreator odczytuje faktyczne ustawienie. macOS nie pozwala aplikacji samodzielnie kliknąć tej opcji.
 
-## Logi i stan
+## Logi
 
 | Plik | Zawartość |
 |---|---|
-| `~/Library/Logs/jira-time-copy.log` | Pełny log diagnostyczny; pięć ostatnich uruchomień pokazuje menu. |
-| `~/Library/Logs/jira-time-copy-status.log` | Odczyty dzisiejszego czasu co 5 minut. |
-| `~/Library/Logs/jira-time-copy-reminder.log` | Wyniki sprawdzania niepełnych dni. |
-| `~/Library/Logs/jira-time-copy-menu.log` | Błędy aplikacji paska menu. |
-| `~/Library/Application Support/jira-time-copy/status.json` | Ostatni stan czytany przez menu. |
+| `jira-time-copy-status.log` | Odczyty i analiza raportów. |
+| `jira-time-copy-reminder.log` | Kontrola braków i powiadomienia. |
+| `jira-time-copy.log` | Wyłącznie opcjonalna synchronizacja. |
+| `jira-time-copy-menu.log` | Błędy aplikacji AppKit. |
 
-Szybki podgląd głównego logu:
+W trybie monitoringu akcja otwarcia logu prowadzi do logu statusu. Przy aktywnej synchronizacji
+prowadzi do logu zapisu.
 
-```bash
-tail -n 100 ~/Library/Logs/jira-time-copy.log
-```
-
-## Diagnostyka launchd
-
-Sprawdzenie aplikacji menu:
+## Diagnostyka
 
 ```bash
 launchctl print gui/$(id -u)/dev.this-is-fine.jira-time-copy.menu
+launchctl print gui/$(id -u)/dev.this-is-fine.jira-time-copy.status
+launchctl print gui/$(id -u)/dev.this-is-fine.jira-time-copy.reminder
 ```
 
-Sprawdzenie automatycznej synchronizacji:
+Agent synchronizacji powinien istnieć tylko po jej włączeniu:
 
 ```bash
 launchctl print gui/$(id -u)/dev.this-is-fine.jira-time-copy.sync
 ```
 
-Sprawdzenie odczytu statusu:
-
-```bash
-launchctl print gui/$(id -u)/dev.this-is-fine.jira-time-copy.status
-```
-
-Najważniejsze pola:
-
-- `state = running` — proces aktualnie działa;
-- `runs` — liczba uruchomień od załadowania agenta;
-- `last exit code = 0` — ostatnie wykonanie zakończyło się poprawnie;
-- `StartCalendarInterval` albo `run interval` — aktywny harmonogram.
+Zadania kalendarzowe zwykle pokazują `not running` pomiędzy wykonaniami. Agent menu powinien mieć
+stan `running`.
 
 ## Typowe problemy
 
 ### Menu pokazuje stare dane
 
-Odczyt odbywa się co 5 minut, a aplikacja odświeża widok co 30 sekund. Jeśli ostatnie sprawdzenie
-zakończyło się błędem, zajrzyj do `jira-time-copy-status.log`.
+Wybierz **Odśwież dane** i sprawdź `jira-time-copy-status.log`. Menu odświeża widok co 30 sekund,
+a agent pobiera nowe worklogi co minutę.
 
-### Synchronizacja nie uruchamia się po zmianie wersji Node.js
+### Brak drugiej Jiry jest pokazywany jako błąd
 
-Agent zapisuje pełną ścieżkę aktualnego procesu Node.js. Po zmianie lub usunięciu wersji zarządzanej
-przez `nvm` uruchom ponownie:
+Otwórz **Ustawienia i połączenia** i wyłącz synchronizację. W tym trybie brak celu jest poprawnym
+stanem.
 
-```bash
-pnpm configure
-```
+### Synchronizacja nadal uruchamia się po wyłączeniu
+
+Zapisz ponownie ustawienia. Aplikacja zatrzyma stary agent i usunie dokładnie
+`dev.this-is-fine.jira-time-copy.sync.plist`.
+
+### Zmieniła się wersja Node.js
+
+Nie wymaga działania. Paczka zawiera własny runtime, a plisty nie używają Node.js zainstalowanego
+w systemie.
 
 ### Powiadomienie pojawia się i znika
 
-W ustawieniach powiadomień aplikacji wybierz styl **Stałe**. Sama zgoda na powiadomienia nie zmienia
-stylu **Tymczasowe**.
+W ustawieniach powiadomień wybierz styl **Stałe**.
 
-### Automatyzacja zgłasza kolizję
+### Automatyzacja zgłasza różnicę
 
-To oznacza, że suma czasu dla dnia różni się między Jirami. Agent celowo jej nie zmienia. Kliknij
-**Rozwiąż…** w powiadomieniu albo wybierz synchronizację interaktywną z menu i odpowiedz
-„Zsumuj”, „Pomiń” lub „Nadpisz”. Identyczne sumy nie są zgłaszane jako kolizje.
-
-## Zmiana harmonogramu
-
-Zmień godziny i próg w oknie **Ustawienia harmonogramu**. Pełną konfigurację, w tym dane Jiry,
-można nadal odświeżyć kreatorem:
-
-```bash
-pnpm configure
-```
-
-Zmiana harmonogramu jest zapisywana w `~/.jira-time-copy.env`, a odpowiednie agenty są
-przeładowywane od razu.
+Nic nie zostało nadpisane. Otwórz synchronizację interaktywną i wybierz „Zsumuj”, „Pomiń” albo
+„Nadpisz”.

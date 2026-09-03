@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Przenosi czas zaraportowany w jednej Jirze do zbiorczego zadania w drugiej.
+// Pilnuje raportów w Jirze i opcjonalnie kopiuje je do drugiej instancji.
 //
 //   pnpm configure                    # konfiguracja (zapisuje do ~/.jira-time-copy.env)
 //   pnpm start                        # interaktywnie: wybor okresu, dni i zapisu
@@ -16,23 +16,18 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as p from '@clack/prompts'
+import {
+  loadConfig,
+  missingConfig,
+  parseEnv,
+  readConfig,
+  serializeConfig,
+  syncEnabled,
+} from './lib/config.mjs'
+import { analyzeReports, range, reportWindow, today } from './lib/reporting.mjs'
 
-const CONFIG = process.env.JIRA_TIME_COPY_ENV ?? path.join(os.homedir(), '.jira-time-copy.env')
+const CONFIG = process.env.THIS_IS_LOGGED_ENV ?? process.env.JIRA_TIME_COPY_ENV ?? path.join(os.homedir(), '.jira-time-copy.env')
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
-const KEYS = [
-  'SRC_URL',
-  'SRC_EMAIL',
-  'SRC_TOKEN',
-  'DST_URL',
-  'DST_EMAIL',
-  'DST_TOKEN',
-  'DST_ISSUE',
-  'COMMENT_KEYS',
-  'SYNC_TIME',
-  'REMINDER_TIME',
-  'WORKDAY_HOURS',
-]
-const REQUIRED = ['SRC_URL', 'SRC_TOKEN', 'DST_URL', 'DST_TOKEN', 'DST_ISSUE']
 
 const jira = (base, token, email) => {
   const auth = email
@@ -55,28 +50,6 @@ const h = (secs) => (secs / 3600).toFixed(2)
 const ident = (a) => a.accountId ?? a.key ?? a.name
 const me = (call) => call('/myself')
 const day = (wl) => wl.started.slice(0, 10) // "2026-08-27T10:00:00.000+0200"
-const today = () => new Date().toLocaleDateString('sv-SE') // lokalne RRRR-MM-DD
-
-/** "2026-07" -> caly miesiac, "2026-07-15" -> jeden dzien */
-const range = (arg) => {
-  if (arg.length === 10) return [arg, arg]
-  const [y, m] = arg.split('-').map(Number)
-  const last = new Date(Date.UTC(y, m, 0)).getUTCDate()
-  return [`${arg}-01`, `${arg}-${String(last).padStart(2, '0')}`]
-}
-
-// ponytail: kalendarz urlopow/swiat dopiero, gdy falszywe alarmy beda problemem.
-const workdays = (from, to) => {
-  const out = []
-  const end = new Date(`${to}T00:00:00Z`)
-  for (const d = new Date(`${from}T00:00:00Z`); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
-    if (![0, 6].includes(d.getUTCDay())) out.push(d.toISOString().slice(0, 10))
-  }
-  return out
-}
-
-const underreported = (days, from, to, expected) =>
-  workdays(from, to).filter((d) => (days[d]?.secs ?? 0) < expected)
 
 /** { dzien: { secs, keys[] } } z worklogow uzytkownika */
 async function collect(call, uid, from, to) {
@@ -115,23 +88,8 @@ const existingByDay = async (call, issue, uid) => {
 
 // --- konfiguracja ---------------------------------------------------------
 
-const parseEnv = (text) =>
-  Object.fromEntries(
-    text
-      .split('\n')
-      .filter((l) => l.trim() && !l.startsWith('#'))
-      .map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]),
-  )
-
 const isCloud = (url) => /\.atlassian\.net/i.test(url)
 const normUrl = (url) => (/^https?:\/\//i.test(url) ? url : 'https://' + url).replace(/\/$/, '')
-
-const readConfig = () => parseEnv(fs.existsSync(CONFIG) ? fs.readFileSync(CONFIG, 'utf8') : '')
-
-const config = () => ({
-  ...readConfig(),
-  ...Object.fromEntries(KEYS.filter((k) => process.env[k]).map((k) => [k, process.env[k]])),
-})
 
 /** przerwanie ctrl-c w dowolnym pytaniu konczy program */
 const ask = async (promise) => {
@@ -144,8 +102,8 @@ const ask = async (promise) => {
 }
 
 async function setup() {
-  const old = readConfig()
-  p.intro('jira-time-copy — konfiguracja')
+  const old = readConfig(CONFIG)
+  p.intro('This Is Logged — konfiguracja')
 
   const askJira = async (title, pre, defUrl) => {
     p.log.step(title)
@@ -185,28 +143,40 @@ async function setup() {
     return { [`${pre}_URL`]: url, [`${pre}_EMAIL`]: email, [`${pre}_TOKEN`]: token }
   }
 
-  const cfg = {
-    ...(await askJira('Jira ZRODLOWA — tam raportujesz na biezaco', 'SRC', 'https://jira.firma.pl')),
-    ...(await askJira('Jira DOCELOWA — tam masz zbiorcze zadanie', 'DST', '')),
-  }
-  cfg.DST_ISSUE = await ask(
-    p.text({
-      message: 'Klucz zbiorczego zadania',
-      placeholder: 'AUT-123',
-      initialValue: old.DST_ISSUE ?? '',
-      validate: (v) => (/^[A-Z][A-Z0-9]*-\d+$/i.test(v.trim()) ? undefined : 'np. AUT-123'),
+  const useSync = await ask(
+    p.confirm({
+      message: 'Synchronizować raporty z drugą Jirą?',
+      initialValue: syncEnabled(old),
     }),
   )
-  cfg.DST_ISSUE = cfg.DST_ISSUE.trim().toUpperCase()
-  cfg.COMMENT_KEYS = (await ask(
-    p.confirm({
-      message: 'Wpisywac w komentarzu worklogu klucze zadan z Jiry zrodlowej?',
-      initialValue: old.COMMENT_KEYS === '1',
-    }),
-  ))
-    ? '1'
-    : ''
-  if (process.platform === 'darwin')
+  const cfg = {
+    ...old,
+    ...(await askJira('Jira GŁÓWNA — tutaj raportujesz czas', 'SRC', 'https://jira.firma.pl')),
+    SYNC_ENABLED: useSync ? '1' : '0',
+  }
+
+  if (useSync) {
+    Object.assign(cfg, await askJira('Jira DOCELOWA — opcjonalna kopia raportów', 'DST', ''))
+    cfg.DST_ISSUE = await ask(
+      p.text({
+        message: 'Klucz zbiorczego zadania',
+        placeholder: 'AUT-123',
+        initialValue: old.DST_ISSUE ?? '',
+        validate: (v) => (/^[A-Z][A-Z0-9]*-\d+$/i.test(v.trim()) ? undefined : 'np. AUT-123'),
+      }),
+    )
+    cfg.DST_ISSUE = cfg.DST_ISSUE.trim().toUpperCase()
+    cfg.COMMENT_KEYS = (await ask(
+      p.confirm({
+        message: 'Dopisywać klucze zadań z Jiry głównej do komentarza worklogu?',
+        initialValue: old.COMMENT_KEYS === '1',
+      }),
+    ))
+      ? '1'
+      : '0'
+  }
+
+  if (process.platform === 'darwin' && useSync)
     cfg.SYNC_TIME = (
       await ask(
         p.text({
@@ -241,18 +211,20 @@ async function setup() {
   }
 
   const s = p.spinner()
-  s.start('Sprawdzam dostep do obu Jir')
+  s.start(useSync ? 'Sprawdzam dostęp do obu Jir' : 'Sprawdzam dostęp do Jiry')
   try {
     const src = jira(cfg.SRC_URL, cfg.SRC_TOKEN, cfg.SRC_EMAIL)
-    const dst = jira(cfg.DST_URL, cfg.DST_TOKEN, cfg.DST_EMAIL)
-    const [su, du] = [await me(src), await me(dst)]
-    const issue = await dst(`/issue/${cfg.DST_ISSUE}?fields=summary`)
-    s.stop('Dostep OK')
-    p.note(
-      `zrodlo:  ${su.displayName} @ ${cfg.SRC_URL}\n` +
-        `cel:     ${du.displayName} @ ${cfg.DST_URL}\n` +
-        `zadanie: ${issue.key} — ${issue.fields.summary}`,
-    )
+    const user = await me(src)
+    const lines = [`Jira:    ${user.displayName} @ ${cfg.SRC_URL}`]
+    if (useSync) {
+      const dst = jira(cfg.DST_URL, cfg.DST_TOKEN, cfg.DST_EMAIL)
+      const targetUser = await me(dst)
+      const issue = await dst(`/issue/${cfg.DST_ISSUE}?fields=summary`)
+      lines.push(`Cel:     ${targetUser.displayName} @ ${cfg.DST_URL}`)
+      lines.push(`Zadanie: ${issue.key} — ${issue.fields.summary}`)
+    }
+    s.stop('Dostęp OK')
+    p.note(lines.join('\n'))
   } catch (e) {
     s.stop('Nie udalo sie zalogowac', 1)
     p.log.error(e.message)
@@ -265,21 +237,14 @@ async function setup() {
     process.exit(1)
   }
 
-  fs.writeFileSync(
-    CONFIG,
-    '# jira-time-copy; EMAIL pusty = token osobisty (Bearer, Jira Server/DC)\n' +
-      '# COMMENT_KEYS=1 dopisuje klucze zadan zrodlowych do komentarza worklogu\n' +
-      KEYS.map((k) => `${k}=${cfg[k] ?? ''}`).join('\n') +
-      '\n',
-    { mode: 0o600 },
-  )
+  fs.writeFileSync(CONFIG, serializeConfig(cfg), { mode: 0o600 })
   fs.chmodSync(CONFIG, 0o600)
 
   if (process.platform === 'darwin') {
     try {
       execFileSync(
         process.execPath,
-        [path.join(ROOT, 'macos/install.mjs'), cfg.SYNC_TIME, cfg.REMINDER_TIME, CONFIG, cfg.WORKDAY_HOURS],
+        [path.join(ROOT, 'macos/install.mjs'), CONFIG],
         { stdio: 'inherit' },
       )
     } catch {
@@ -290,18 +255,37 @@ async function setup() {
 
   p.outro(
     process.platform === 'darwin'
-      ? `Gotowe — próg ${cfg.WORKDAY_HOURS} h, przypomnienie o ${cfg.REMINDER_TIME}, synchronizacja o ${cfg.SYNC_TIME}.`
-      : `Zapisano ${CONFIG} — teraz: pnpm start`,
+      ? useSync
+        ? `Gotowe — przypomnienie ${cfg.REMINDER_TIME}, synchronizacja ${cfg.SYNC_TIME}.`
+        : `Gotowe — monitoring co minutę, przypomnienie ${cfg.REMINDER_TIME}.`
+      : `Zapisano ${CONFIG}.`,
   )
+}
+
+async function checkConfig() {
+  const cfg = loadConfig(CONFIG)
+  need(cfg, syncEnabled(cfg) ? 'sync' : 'monitoring')
+  const source = await me(jira(cfg.SRC_URL, cfg.SRC_TOKEN, cfg.SRC_EMAIL))
+  const result = { source: source.displayName ?? ident(source) }
+  if (syncEnabled(cfg)) {
+    const dst = jira(cfg.DST_URL, cfg.DST_TOKEN, cfg.DST_EMAIL)
+    const target = await me(dst)
+    const issue = await dst(`/issue/${cfg.DST_ISSUE}?fields=summary`)
+    result.target = target.displayName ?? ident(target)
+    result.issue = `${issue.key} — ${issue.fields.summary}`
+  }
+  console.log(JSON.stringify(result))
 }
 
 // --- wspolne dla obu trybow ----------------------------------------------
 
-const need = (cfg) => {
-  const missing = REQUIRED.filter((k) => !cfg[k])
+const need = (cfg, capability = 'monitoring') => {
+  const missing = missingConfig(cfg, capability)
   if (missing.length) {
-    console.error(`Brak konfiguracji (${missing.join(', ')}). Odpal: pnpm configure`)
-    process.exit(1)
+    const message = capability === 'sync' && missing.includes('SYNC_ENABLED')
+      ? 'Synchronizacja z drugą Jirą nie jest skonfigurowana. Uruchom: pnpm configure'
+      : `Brak konfiguracji (${missing.join(', ')}). Uruchom: pnpm configure`
+    throw new Error(message)
   }
 }
 
@@ -324,13 +308,14 @@ const fetchBoth = async (cfg, from, to) => {
 }
 
 const notification = (message, collision = false) => {
-  if (process.env.JIRA_TIME_COPY_NOTIFIER)
-    return execFileSync(process.env.JIRA_TIME_COPY_NOTIFIER, [collision ? '--notify-collision' : '--notify', message])
+  const notifier = process.env.THIS_IS_LOGGED_NOTIFIER ?? process.env.JIRA_TIME_COPY_NOTIFIER
+  if (notifier)
+    return execFileSync(notifier, [collision ? '--notify-collision' : '--notify', message])
   return execFileSync('/usr/bin/osascript', [
       '-e',
       'on run argv',
       '-e',
-      'display notification (item 1 of argv) with title "Jira Time Copy"',
+      'display notification (item 1 of argv) with title "This Is Logged"',
       '-e',
       'end run',
       message,
@@ -338,10 +323,10 @@ const notification = (message, collision = false) => {
 }
 
 async function remind() {
-  const cfg = config()
+  const cfg = loadConfig(CONFIG)
   need(cfg)
   const now = today()
-  const from = `${now.slice(0, 7)}-01`
+  const [from, to] = reportWindow(now)
   const expectedHours = Number(cfg.WORKDAY_HOURS || 8)
   if (!(expectedHours > 0 && expectedHours <= 24)) throw new Error('WORKDAY_HOURS musi być liczbą od 0 do 24.')
   const expected = expectedHours * 3600
@@ -349,13 +334,13 @@ async function remind() {
 
   try {
     const src = jira(cfg.SRC_URL, cfg.SRC_TOKEN, cfg.SRC_EMAIL)
-    days = await collect(src, ident(await me(src)), from, now)
+    days = await collect(src, ident(await me(src)), from, to)
   } catch (e) {
-    notification('Nie udało się sprawdzić brakujących worklogów w Jirze źródłowej.')
+    notification('Nie udało się sprawdzić brakujących worklogów w Jirze.')
     throw e
   }
 
-  const short = underreported(days, from, now, expected)
+  const short = analyzeReports({ now, expectedSeconds: expected, sourceDays: days }).underreported
   if (!short.length) {
     console.log(`${new Date().toISOString()} wszystkie dni robocze mają co najmniej ${h(expected)}h`)
     return
@@ -366,38 +351,61 @@ async function remind() {
     .map((d) => `${d.slice(8)}.${d.slice(5, 7)} (${h(days[d]?.secs ?? 0)}/${h(expected)} h)`)
   const parts = []
   if (short.includes(now))
-    parts.push(`Dzisiaj masz ${h(days[now]?.secs ?? 0)} z oczekiwanych ${h(expected)} h w Jirze źródłowej.`)
+    parts.push(`Dzisiaj masz ${h(days[now]?.secs ?? 0)} z oczekiwanych ${h(expected)} h w Jirze.`)
   if (earlier.length) parts.push(`Niepełne poprzednie dni: ${earlier.join(', ')}.`)
   notification(parts.join(' '))
   console.log(`${new Date().toISOString()} przypomnienie: ${short.join(', ')}`)
 }
 
 async function pollStatus() {
-  const cfg = config()
+  const cfg = loadConfig(CONFIG)
   need(cfg)
   const now = today()
-  const file = process.env.JIRA_TIME_COPY_STATUS ?? path.join(os.homedir(), 'Library', 'Application Support', 'jira-time-copy', 'status.json')
-  let state
+  const [from, to] = reportWindow(now)
+  const expectedHours = Number(cfg.WORKDAY_HOURS || 8)
+  if (!(expectedHours > 0 && expectedHours <= 24)) throw new Error('WORKDAY_HOURS musi być liczbą od 0 do 24.')
+  const expected = expectedHours * 3600
+  const file = process.env.THIS_IS_LOGGED_STATUS ?? process.env.JIRA_TIME_COPY_STATUS ?? path.join(os.homedir(), 'Library', 'Application Support', 'jira-time-copy', 'status.json')
+  let state = {
+    checkedAt: new Date().toISOString(),
+    expectedSeconds: expected,
+    syncEnabled: syncEnabled(cfg),
+  }
   try {
     const src = jira(cfg.SRC_URL, cfg.SRC_TOKEN, cfg.SRC_EMAIL)
-    const days = await collect(src, ident(await me(src)), now, now)
-    state = { checkedAt: new Date().toISOString(), seconds: days[now]?.secs ?? 0 }
+    const days = await collect(src, ident(await me(src)), from, to)
+    let done = null
+    if (syncEnabled(cfg)) {
+      try {
+        const dst = jira(cfg.DST_URL, cfg.DST_TOKEN, cfg.DST_EMAIL)
+        done = await existingByDay(dst, cfg.DST_ISSUE, ident(await me(dst)))
+      } catch (e) {
+        state.targetError = String(e.message).slice(0, 300)
+      }
+    }
+    const reports = analyzeReports({ now, expectedSeconds: expected, sourceDays: days, targetDays: done })
+    state = {
+      ...state,
+      seconds: days[now]?.secs ?? 0,
+      ...reports,
+    }
   } catch (e) {
-    state = { checkedAt: new Date().toISOString(), error: String(e.message).slice(0, 300) }
+    state.error = String(e.message).slice(0, 300)
   }
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(`${file}.tmp`, JSON.stringify(state), { mode: 0o600 })
   fs.renameSync(`${file}.tmp`, file)
-  if (state.error) throw new Error(state.error)
-  console.log(`${state.checkedAt} dzisiaj w Jirze źródłowej: ${h(state.seconds)}h`)
+  if (state.error || state.targetError) throw new Error(state.error ?? state.targetError)
+  const target = state.syncEnabled ? `, cel: ${h(state.month.targetSeconds)}h` : ''
+  console.log(`${state.checkedAt} miesiąc: ${h(state.month.sourceSeconds)}/${h(state.monthCapacity.expectedSeconds)}h${target}`)
 }
 
 // --- tryb interaktywny ----------------------------------------------------
 
 async function tui(args) {
-  const cfg = config()
-  need(cfg)
-  p.intro(`jira-time-copy → ${cfg.DST_ISSUE}`)
+  const cfg = loadConfig(CONFIG)
+  need(cfg, 'sync')
+  p.intro(`This Is Logged → ${cfg.DST_ISSUE}`)
 
   const now = today()
   const prev = new Date(now.slice(0, 8) + '01')
@@ -530,8 +538,8 @@ async function run(args) {
   const arg =
     args.find((a) => /^\d{4}-\d{2}(-\d{2})?$/.test(a)) ?? today().slice(0, 7)
   const [from, to] = range(arg)
-  const cfg = config()
-  need(cfg)
+  const cfg = loadConfig(CONFIG)
+  need(cfg, 'sync')
 
   const { dst, days, done } = await fetchBoth(cfg, from, to)
   const add = poster(dst, cfg.DST_ISSUE, cfg.COMMENT_KEYS === '1')
@@ -590,21 +598,31 @@ async function selfcheck() {
   assert.deepEqual(range('2026-07'), ['2026-07-01', '2026-07-31'])
   assert.deepEqual(range('2026-02'), ['2026-02-01', '2026-02-28'])
   assert.deepEqual(range('2026-07-15'), ['2026-07-15', '2026-07-15'])
-  assert.deepEqual(workdays('2026-08-28', '2026-09-02'), [
-    '2026-08-28',
-    '2026-08-31',
-    '2026-09-01',
-    '2026-09-02',
-  ])
+  const reports = analyzeReports({
+    now: '2026-09-03',
+    expectedSeconds: 28800,
+    sourceDays: { '2026-09-01': { secs: 7200 }, '2026-09-02': { secs: 28800 } },
+    targetDays: { '2026-09-01': { secs: 3600 }, '2026-09-02': { secs: 28800 } },
+  })
+  assert.deepEqual(reports.underreported, ['2026-09-01', '2026-09-03'])
+  assert.deepEqual([reports.week.from, reports.week.to], ['2026-08-31', '2026-09-02'])
+  assert.deepEqual(reports.month.missing, [{ date: '2026-09-01', sourceSeconds: 7200 }])
+  assert.deepEqual(reports.month.differences, [{ date: '2026-09-01', sourceSeconds: 7200, targetSeconds: 3600 }])
+  assert.deepEqual(reports.monthCapacity, {
+    workingDays: 22,
+    daysOff: 8,
+    expectedSeconds: 633600,
+    reportedSeconds: 36000,
+  })
   assert.deepEqual(
-    underreported(
-      { '2026-09-01': { secs: 7200 }, '2026-09-02': { secs: 28800 } },
-      '2026-09-01',
-      '2026-09-02',
-      28800,
-    ),
-    ['2026-09-01'],
+    analyzeReports({ now: '2026-09-07', expectedSeconds: 28800, sourceDays: {} }).week.from,
+    '2026-08-31',
   )
+  const monitoring = analyzeReports({ now: '2026-12-28', expectedSeconds: 28800, sourceDays: {} })
+  assert.equal(monitoring.today.differences, null)
+  assert.ok(monitoring.month.missing.some(({ date }) => date === '2026-12-23'))
+  assert.ok(!monitoring.month.missing.some(({ date }) => ['2026-12-24', '2026-12-25', '2026-12-26'].includes(date)))
+  assert.equal(analyzeReports({ now: '2026-08-03', expectedSeconds: 28800, sourceDays: {} }).monthCapacity.workingDays, 20)
   assert.deepEqual(await collect(fake, 'u1', ...range('2026-07')), {
     '2026-07-01': { secs: 6300, keys: ['WP-1', 'WP-2'] },
   })
@@ -616,6 +634,15 @@ async function selfcheck() {
     SRC_URL: 'https://a/b',
     DST_TOKEN: 'x=y=z',
   })
+  assert.ok(syncEnabled({ DST_URL: 'https://b', DST_TOKEN: 'x', DST_ISSUE: 'ABC-1' }))
+  assert.ok(!syncEnabled({ SYNC_ENABLED: '0', DST_URL: 'https://b', DST_TOKEN: 'x', DST_ISSUE: 'ABC-1' }))
+  assert.deepEqual(missingConfig({ SRC_URL: 'https://a', SRC_TOKEN: 'x' }), [])
+  assert.deepEqual(missingConfig({ SRC_URL: 'https://a', SRC_TOKEN: 'x' }, 'sync'), [
+    'SYNC_ENABLED',
+    'DST_URL',
+    'DST_TOKEN',
+    'DST_ISSUE',
+  ])
   assert.equal(syncState(3600), 'add')
   assert.equal(syncState(3600, { secs: 3600 }), 'synced')
   assert.equal(syncState(3600, { secs: 1800 }), 'collision')
@@ -638,6 +665,8 @@ const interactive = process.stdin.isTTY && !args.includes('--commit') && !plain
 try {
   await (args.includes('--selfcheck')
     ? selfcheck()
+    : args.includes('--check-config')
+      ? checkConfig()
     : args[0] === 'setup'
       ? setup()
       : args.includes('--remind')
@@ -648,6 +677,6 @@ try {
             ? tui(args)
             : run(args))
 } catch (e) {
-  if (args.includes('--commit')) console.error(`niepowodzenie: ${e.message}`)
-  throw e
+  console.error(args.includes('--commit') ? `niepowodzenie: ${e.message}` : e.message)
+  process.exitCode = 1
 }
