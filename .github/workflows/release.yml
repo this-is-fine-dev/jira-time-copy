@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify version
+        run: |
+          version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw macos/Info.plist)
+          test "v$version" = "$GITHUB_REF_NAME"
+
+      - name: Build application
+        run: scripts/package-macos.sh
+
+      - name: Generate signed appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_PRIVATE_KEY"
+          version=${GITHUB_REF_NAME#v}
+          mkdir -p dist/update
+          cp "dist/This-Is-Logged-$version.zip" dist/update/
+          printf '%s' "$SPARKLE_PRIVATE_KEY" | ".build/artifacts/sparkle/Sparkle/bin/generate_appcast" \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/" \
+            -o dist/update/appcast.xml \
+            dist/update
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/This-Is-Logged-$version.zip" \
+            "dist/This Is Logged.dmg" \
+            "dist/update/appcast.xml" \
+            --generate-notes \
+            --title "This Is Logged $version"

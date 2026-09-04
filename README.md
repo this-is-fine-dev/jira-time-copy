@@ -2,180 +2,143 @@
 
 > Your worklogs are fine. Probably.
 
-Lekka aplikacja macOS w pasku menu, która pilnuje raportów czasu w Jirze. Pokazuje stan dnia,
-tygodnia i miesiąca, przypomina o brakach i — opcjonalnie — kopiuje dzienne sumy do zbiorczego
-zadania w drugiej Jirze.
+Natywna aplikacja macOS w pasku menu, która pilnuje raportów czasu w Jirze. Pokazuje stan dnia,
+tygodnia i miesiąca, przypomina o brakach i opcjonalnie kopiuje dzienne sumy do drugiej Jiry.
 
-## Dwa tryby
+Cała aplikacja, klient Jiry i automatyzacja są napisane w Swifcie. Paczka nie zawiera Node.js,
+pnpm, skryptów uruchamianych w Terminalu ani zewnętrznych zależności.
+
+## Tryby
 
 | Tryb | Jira główna | Jira docelowa | Kontrola raportów | Kopiowanie |
 |---|---:|---:|---:|---:|
 | Monitoring | wymagana | niepotrzebna | tak | nie |
 | Monitoring + synchronizacja | wymagana | wymagana | tak | tak |
 
-Druga Jira nie jest potrzebna do działania aplikacji. Awaria albo wyłączenie synchronizacji nie
-blokuje odczytu raportów z Jiry głównej.
+Awaria albo wyłączenie synchronizacji nie blokuje odczytu raportów z Jiry głównej.
 
 ## Możliwości
 
-- aktualny czas raportowany dzisiaj i bilans całego miesiąca;
-- kontrola wczoraj, aktualnego tygodnia pracy i zakończonych dni miesiąca;
-- wskazanie konkretnych dat oraz brakujących godzin;
-- odświeżanie danych co minutę przez `launchd`;
-- zachowanie ostatniego poprawnego odczytu po rozłączeniu VPN lub utracie sieci;
+- raport dzisiejszy oraz bilans bieżącego miesiąca;
+- kontrola wczoraj, tygodnia pracy i zakończonych dni miesiąca;
+- wskazanie konkretnych dat i brakujących godzin;
+- odświeżanie co minutę przez `launchd`;
+- ostatnie poprawne dane widoczne po rozłączeniu VPN;
 - trwałe powiadomienia o pustych i niepełnych dniach;
-- polskie święta ustawowe i weekendy wyłączone z wymaganej normy;
+- weekendy i polskie święta ustawowe wyłączone z normy;
 - Jira Cloud oraz Jira Server/Data Center;
 - opcjonalne porównanie i synchronizacja z drugą Jirą;
-- bezpieczne rozwiązywanie różnic: automatyzacja niczego nie nadpisuje;
-- tokeny przechowywane lokalnie z uprawnieniami `600`.
+- natywne okno rozwiązywania różnic bez Terminala;
+- cała konfiguracja dostępna w natywnym oknie aplikacji.
+- automatyczne aktualizacje przez Sparkle i GitHub Releases.
 
 ## Wymagania
 
 - macOS 13.5 lub nowszy;
 - token do Jiry głównej;
 - token do Jiry docelowej tylko przy synchronizacji;
-- paczka z tego repo jest obecnie budowana dla Apple Silicon.
+- bieżąca paczka jest budowana dla Apple Silicon.
 
 ## Instalacja
 
 1. Otwórz `This Is Logged.dmg`.
 2. Przeciągnij **This Is Logged** do **Applications**.
-3. Uruchom aplikację. Przy pierwszym starcie automatycznie otworzy się natywna konfiguracja.
-4. Podaj dane Jiry głównej, opcjonalnie włącz drugą Jirę, a następnie wybierz **Sprawdź i zapisz**.
+3. Uruchom aplikację.
+4. Podaj dane Jiry głównej, opcjonalnie włącz drugą Jirę i wybierz **Sprawdź i zapisz**.
 
-Konfigurator:
+Konfigurator sprawdza połączenia przed zapisem, zapisuje ustawienia i uzgadnia zadania `launchd`.
+Instalacja i konfiguracja nie wymagają Terminala.
 
-- sprawdza logowanie do Jiry głównej i opcjonalnej Jiry docelowej przed zapisem;
-- sprawdza istnienie zadania docelowego;
-- zapisuje sekrety w `~/.this-is-logged.env` z uprawnieniami `600`;
-- instaluje i przeładowuje właściwe zadania `launchd`;
-- uruchamia monitoring i sprawdza trwałe powiadomienia.
-
-Instalacja, pierwsza konfiguracja i późniejsze zmiany nie wymagają Terminala, Node.js ani pnpm.
-
-Przy aktualizacji stara konfiguracja `~/.jira-time-copy.env`, status, logi i agenty są jednorazowo
-migrowane do nazwy `this-is-logged`. Nie trzeba ponownie wpisywać tokenów.
+Istniejąca konfiguracja `~/.this-is-logged.env` jest automatycznie importowana i pozostaje na
+dysku jako kopia zapasowa.
 
 ### Tokeny
 
-- **Jira Cloud** (`*.atlassian.net`) — email konta Atlassian oraz API token z
-  <https://id.atlassian.com/manage-profile/security/api-tokens>;
-- **Jira Server/Data Center** — Personal Access Token; pole email pozostaje puste.
+- **Jira Cloud** (`*.atlassian.net`) — email konta Atlassian oraz API token;
+- **Jira Server/Data Center** — Personal Access Token, bez emaila.
 
 ## Menu macOS
 
-Nagłówek pokazuje bieżący miesiąc, zaraportowane godziny względem planu, kompletność zamkniętych
-dni oraz dzisiejszy czas.
+Nagłówek pokazuje przede wszystkim dzisiejszy raport, a niżej bilans bieżącego miesiąca.
 
-W trybie monitoringu menu zawiera:
+Menu zawiera:
 
 - raport dzisiejszy, wczorajszy, tygodniowy i miesięczny;
-- dokładne daty braków w rozwijanych szczegółach;
+- konkretne daty braków i różnic z celem;
 - harmonogram przypomnienia;
 - ręczne odświeżenie;
-- ustawienia i log monitoringu.
+- ustawienia i log monitoringu;
+- przy aktywnej drugiej Jirze: harmonogram, ręczny zapis, synchronizację interaktywną i historię.
 
-Po włączeniu dodatku pojawia się osobna sekcja **Synchronizacja** z ręcznym zapisem, trybem
-interaktywnym, harmonogramem i historią. Porównania z celem są widoczne tylko w szczegółach
-raportów, a nie w głównym bilansie.
+## Powiadomienia
 
-Szczegóły systemowe: [Automatyzacja na macOS](docs/macos.md).
+Przypomnienie sprawdza dzisiaj oraz wcześniejsze dni robocze bieżącego miesiąca. Przy normie 8 h
+wpis 2 h wywoła komunikat `2.00/8.00 h`, a 8 h lub więcej nie wywoła alarmu.
 
-## Powiadomienia i kalendarz
-
-Przypomnienie sprawdza dzisiaj oraz wcześniejsze dni robocze bieżącego miesiąca. Przy normie
-`8 h` wpis `2 h` wywoła komunikat `2.00/8.00 h`, a `8 h` lub więcej nie wywoła alarmu.
-
-Weekendy oraz polskie święta ustawowe są pomijane. Urlopy i firmowy termin dnia wolnego
-oddawanego za święto w sobotę wymagają kalendarza pracodawcy i nie są automatycznie rozpoznawane.
-
-macOS wymaga, aby użytkownik zatwierdził powiadomienia i może wymagać ręcznego wyboru stylu
-**Stałe**. Kreator sprawdza rzeczywiste ustawienie i otwiera właściwy panel, jeśli jest ono
-niepoprawne.
+macOS wymaga zgody użytkownika i może wymagać ręcznego wyboru stylu **Stałe**. System nie pozwala
+aplikacji samodzielnie zmienić tej opcji.
 
 ## Opcjonalna synchronizacja
 
-Synchronizacja sumuje worklogi użytkownika per dzień i zapisuje brakujące sumy w jednym zadaniu
-drugiej Jiry. Zgodne dni są pomijane. Jeśli wartości się różnią, automatyzacja nie nadpisuje celu
-i pokazuje powiadomienie umożliwiające uruchomienie trybu interaktywnego.
+Automatyzacja dodaje brakujące dzienne sumy do jednego zadania docelowego. Zgodne dni pomija, a
+różnic nigdy nie nadpisuje samodzielnie.
 
-```bash
-pnpm start                       # interaktywny wybór okresu i sposobu zapisu
-pnpm start 2026-08               # konkretny miesiąc
-pnpm start 2026-08-27            # konkretny dzień
-pnpm start 2026-08 --dry-run     # podgląd bez zapisu
-pnpm start 2026-08 --commit      # zapis bez pytań; różnice pomijane
-```
+Natywne okno synchronizacji pozwala wybrać dzień, bieżący lub poprzedni miesiąc, a następnie dla
+każdej różnicy wybrać:
 
-W trybie interaktywnym różnicę można zsumować, pominąć albo nadpisać. Nadpisanie usuwa wyłącznie
-worklogi zalogowanego użytkownika z wybranego dnia w zadaniu docelowym. Jira główna nigdy nie jest
-modyfikowana.
+- **Zsumuj** — dopisz czas źródłowy do istniejącego;
+- **Pomiń** — pozostaw cel bez zmian;
+- **Nadpisz** — usuń wyłącznie własne wpisy z tego dnia i zapisz wartość źródłową.
 
-Próba uruchomienia tych poleceń bez skonfigurowanego dodatku kończy się bezpieczną odmową.
+Każdy zapis wymaga końcowego potwierdzenia.
 
-## Zadania `launchd`
+## Automatyzacja `launchd`
 
-| Zadanie | Instalacja | Działanie |
-|---|---|---|
-| Status | zawsze, co minutę | Czyta raporty i zapisuje stan dla menu. |
-| Przypomnienie | zawsze, dni robocze | Alarmuje o niepełnych raportach. |
-| Menu | zawsze, po zalogowaniu | Utrzymuje aplikację w pasku menu. |
-| Synchronizacja | tylko po włączeniu | Kopiuje bieżący miesiąc do drugiej Jiry. |
-
-Wyłączenie synchronizacji zatrzymuje jej agent i usuwa jego plist. Pozostałe trzy zadania działają
-dalej.
-
-## Konfiguracja
-
-| Zmienna | Znaczenie |
+| Zadanie | Działanie |
 |---|---|
-| `SRC_URL`, `SRC_EMAIL`, `SRC_TOKEN` | Jira główna. |
-| `WORKDAY_HOURS` | Norma pełnego dnia, domyślnie `8`. |
-| `REMINDER_TIME` | Godzina przypomnienia. |
-| `SYNC_ENABLED` | `1` włącza, `0` wyłącza synchronizację. |
-| `DST_URL`, `DST_EMAIL`, `DST_TOKEN` | Opcjonalna Jira docelowa. |
-| `DST_ISSUE` | Zbiorcze zadanie docelowe. |
-| `COMMENT_KEYS` | `1` dodaje klucze zadań głównych do komentarza. |
-| `SYNC_TIME` | Godzina automatycznego zapisu. |
-| `THIS_IS_LOGGED_ENV` | Alternatywna ścieżka konfiguracji. |
+| Status | Co minutę odczytuje raporty i zapisuje stan dla menu. |
+| Przypomnienie | W dni robocze sprawdza puste i niepełne raporty. |
+| Menu | Uruchamia aplikację po zalogowaniu. |
+| Synchronizacja | Opcjonalnie kopiuje raporty o ustawionej godzinie. |
 
-Techniczne ścieżki, etykiety `launchd` i bundle ID również używają nazwy `this-is-logged`.
+Wszystkie zadania uruchamiają tę samą binarkę `ThisIsLogged`. Agent synchronizacji istnieje tylko
+po włączeniu drugiej Jiry.
 
-## Testy
+## Dane aplikacji
 
-```bash
-pnpm test
-```
+| Element | Lokalizacja |
+|---|---|
+| Ustawienia i tokeny | `~/Library/Application Support/this-is-logged/settings.json` (`0600`) |
+| Stan i cache offline | `~/Library/Application Support/this-is-logged/status.json` |
+| Agenty | `~/Library/LaunchAgents/dev.this-is-fine.this-is-logged.*.plist` |
+| Logi | `~/Library/Logs/this-is-logged*.log` |
 
-Self-check nie łączy się z Jirą. Sprawdza oba tryby konfiguracji, analizę raportów, kalendarz,
-sumowanie worklogów oraz bezpieczne planowanie synchronizacji.
+## Testy i budowanie
 
-## Budowanie paczki macOS
-
-Dla dewelopera wymagane są Node.js 18+, pnpm oraz Command Line Tools for Xcode:
+Wymagane są Swift 6 i Command Line Tools for Xcode:
 
 ```bash
-pnpm install
-pnpm package:macos
+scripts/test.sh
+scripts/package-macos.sh
 ```
 
-Gotowy obraz trafia do `dist/This Is Logged.dmg`. Zawiera aplikację, backend, zależności i własny
-runtime Node, więc na komputerze użytkownika repozytorium nie jest potrzebne.
+Gotowy obraz trafia do `dist/This Is Logged.dmg`. Bez `MACOS_SIGN_IDENTITY` build jest podpisany
+ad hoc i służy do testów lokalnych. Publiczna dystrybucja wymaga Developer ID i notaryzacji.
 
-Bez `MACOS_SIGN_IDENTITY` build jest podpisany ad hoc i nadaje się do testów lokalnych. Publiczna
-dystrybucja wymaga certyfikatu Developer ID Application oraz notaryzacji Apple.
+Po jednorazowej instalacji wersji 2.1 kolejne wydania są sprawdzane automatycznie. Ręczne
+sprawdzenie jest dostępne w menu **Aplikacja → Sprawdź aktualizacje…**.
+
+Tag `vX.Y.Z` uruchamia workflow publikujący podpisane archiwum, DMG i `appcast.xml` w GitHub
+Releases. Repozytorium wymaga sekretu Actions `SPARKLE_PRIVATE_KEY`; jego wartością jest zawartość
+lokalnego, ignorowanego przez Git pliku `.sparkle/private-key`.
 
 ## Bezpieczeństwo
 
-- monitoring wykonuje wyłącznie żądania odczytu;
-- kod celu nie jest wywoływany przy `SYNC_ENABLED=0`;
-- zapis wymaga aktywnej synchronizacji i polecenia interaktywnego albo `--commit`;
-- automatyzacja nigdy nie nadpisuje różnic;
-- sekrety i stan mają uprawnienia `600`;
-- tokeny nie są umieszczane w argumentach procesów ani logach.
+- monitoring wykonuje tylko żądania odczytu;
+- przy wyłączonej synchronizacji klient docelowej Jiry nie jest tworzony;
+- automatyzacja nie nadpisuje różnic;
+- operacja nadpisania wymaga ręcznego wyboru i potwierdzenia;
+- tokeny nie trafiają do argumentów procesów, plistów, statusu ani logów;
+- tokeny są zapisane lokalnie jawnym tekstem w pliku czytelnym tylko dla konta użytkownika.
 
-## Inne systemy
-
-Interaktywny i bezobsługowy tryb synchronizacji Node.js działa również poza macOS. Aplikacja w
-pasku menu, `launchd` oraz natywne powiadomienia są przeznaczone dla macOS.
+Szczegóły systemowe: [Automatyzacja na macOS](docs/macos.md).

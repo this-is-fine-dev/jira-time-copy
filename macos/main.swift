@@ -1,7 +1,9 @@
 import AppKit
 import Darwin
 import Foundation
-import UserNotifications
+import Sparkle
+import ThisIsLoggedCore
+@preconcurrency import UserNotifications
 
 private let collisionCategory = "THIS_IS_LOGGED_COLLISION"
 private let resolveCollisionsAction = "RESOLVE_COLLISIONS"
@@ -27,10 +29,39 @@ private let configURL: URL = {
   }
   return current
 }()
-private let configKeys = [
-  "SRC_URL", "SRC_EMAIL", "SRC_TOKEN", "SYNC_ENABLED", "DST_URL", "DST_EMAIL", "DST_TOKEN",
-  "DST_ISSUE", "COMMENT_KEYS", "SYNC_TIME", "REMINDER_TIME", "WORKDAY_HOURS",
+private final class BoolBox: @unchecked Sendable { var value = false }
+
+private let textEditingCommands: [(title: String, action: Selector, key: String, modifiers: NSEvent.ModifierFlags)] = [
+  ("Cofnij", Selector(("undo:")), "z", .command),
+  ("Ponów", Selector(("redo:")), "z", [.command, .shift]),
+  ("Wytnij", #selector(NSText.cut(_:)), "x", .command),
+  ("Kopiuj", #selector(NSText.copy(_:)), "c", .command),
+  ("Wklej", #selector(NSText.paste(_:)), "v", .command),
+  ("Zaznacz wszystko", #selector(NSText.selectAll(_:)), "a", .command),
 ]
+
+private func makeTextEditingMenu() -> NSMenu {
+  let menu = NSMenu(title: "Edycja")
+  for (index, command) in textEditingCommands.enumerated() {
+    if index == 2 { menu.addItem(.separator()) }
+    let item = menu.addItem(withTitle: command.title, action: command.action, keyEquivalent: command.key)
+    item.keyEquivalentModifierMask = command.modifiers
+  }
+  return menu
+}
+
+private func makeMainMenu() -> NSMenu {
+  let main = NSMenu()
+  let applicationItem = NSMenuItem()
+  let applicationMenu = NSMenu()
+  applicationMenu.addItem(withTitle: "Zakończ This Is Logged", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+  applicationItem.submenu = applicationMenu
+  main.addItem(applicationItem)
+  let editItem = NSMenuItem()
+  editItem.submenu = makeTextEditingMenu()
+  main.addItem(editItem)
+  return main
+}
 
 private func registerNotificationCategories(_ center: UNUserNotificationCenter) {
   center.setNotificationCategories([
@@ -49,7 +80,7 @@ private func deliverNotification(_ body: String, category: String? = nil) -> Boo
   let center = UNUserNotificationCenter.current()
   registerNotificationCategories(center)
   let done = DispatchSemaphore(value: 0)
-  var delivered = false
+  let delivered = BoolBox()
   center.requestAuthorization(options: [.alert, .sound]) { granted, error in
     if let error { fputs("notification authorization: \(error)\n", stderr) }
     guard granted else {
@@ -64,22 +95,22 @@ private func deliverNotification(_ body: String, category: String? = nil) -> Boo
     if let category { content.categoryIdentifier = category }
     center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) { error in
       if let error { fputs("notification delivery: \(error)\n", stderr) }
-      delivered = error == nil
+      delivered.value = error == nil
       done.signal()
     }
   }
-  return done.wait(timeout: .now() + 15) == .success && delivered
+  return done.wait(timeout: .now() + 15) == .success && delivered.value
 }
 
 private func persistentNotificationsEnabled() -> Bool {
   let done = DispatchSemaphore(value: 0)
-  var enabled = false
+  let enabled = BoolBox()
   UNUserNotificationCenter.current().getNotificationSettings { settings in
-    enabled = settings.authorizationStatus == .authorized && settings.alertStyle == .alert
+    enabled.value = settings.authorizationStatus == .authorized && settings.alertStyle == .alert
     fputs("notification settings: authorization=\(settings.authorizationStatus.rawValue), alertStyle=\(settings.alertStyle.rawValue)\n", stderr)
     done.signal()
   }
-  return done.wait(timeout: .now() + 15) == .success && enabled
+  return done.wait(timeout: .now() + 15) == .success && enabled.value
 }
 
 private struct Run {
@@ -90,6 +121,7 @@ private struct Run {
 }
 
 private struct ReportStatus: Decodable {
+  let backend: String?
   let checkedAt: String
   let lastSuccessfulAt: String?
   let syncEnabled: Bool?
@@ -171,29 +203,28 @@ private func menuIcon() -> NSImage? {
   return image
 }
 
-private func updatedConfig(_ text: String, sync: String?, reminder: String, hours: String) -> String {
-  var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-  if lines.last == "" { lines.removeLast() }
-  var settings = [("REMINDER_TIME", reminder), ("WORKDAY_HOURS", hours)]
-  if let sync { settings.append(("SYNC_TIME", sync)) }
-  for (key, value) in settings {
-    let prefix = "\(key)="
-    if let index = lines.firstIndex(where: { $0.hasPrefix(prefix) }) {
-      lines[index] = prefix + value
-    } else {
-      lines.append(prefix + value)
-    }
-  }
-  return lines.joined(separator: "\n") + "\n"
-}
-
 private func savedSetting(_ key: String, fallback: String) -> String {
-  guard let text = try? String(contentsOf: configURL, encoding: .utf8) else { return fallback }
-  let prefix = "\(key)="
-  return text.split(separator: "\n").map(String.init).first { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) } ?? fallback
+  if CommandLine.arguments.contains(where: { $0.contains("selfcheck") }) { return fallback }
+  return readSettings()[key] ?? fallback
 }
 
 private func readSettings() -> [String: String] {
+  if let settings = try? SettingsStore().loadDraft() {
+    return [
+      "SRC_URL": settings.source.url.absoluteString,
+      "SRC_EMAIL": settings.source.email,
+      "SRC_TOKEN": settings.source.token,
+      "SYNC_ENABLED": settings.synchronizationEnabled ? "1" : "0",
+      "DST_URL": settings.target?.url.absoluteString ?? "",
+      "DST_EMAIL": settings.target?.email ?? "",
+      "DST_TOKEN": settings.target?.token ?? "",
+      "DST_ISSUE": settings.targetIssue,
+      "COMMENT_KEYS": settings.commentIssueKeys ? "1" : "0",
+      "SYNC_TIME": settings.synchronizationTime,
+      "REMINDER_TIME": settings.reminderTime,
+      "WORKDAY_HOURS": String(settings.workdayHours),
+    ]
+  }
   guard let text = try? String(contentsOf: configURL, encoding: .utf8) else { return [:] }
   var values: [String: String] = [:]
   for part in text.split(separator: "\n") {
@@ -202,12 +233,6 @@ private func readSettings() -> [String: String] {
     values[String(line[..<split])] = String(line[line.index(after: split)...])
   }
   return values
-}
-
-private func serializedSettings(_ values: [String: String]) -> String {
-  "# this-is-logged; EMAIL pusty = token osobisty (Bearer, Jira Server/DC)\n" +
-    "# COMMENT_KEYS=1 dopisuje klucze zadan z Jiry glownej do komentarza worklogu\n" +
-    configKeys.map { "\($0)=\(values[$0] ?? "")" }.joined(separator: "\n") + "\n"
 }
 
 private func normalizedURL(_ value: String) -> String {
@@ -234,8 +259,13 @@ private func todayPeriod() -> String {
   return formatter.string(from: Date())
 }
 
-private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
+@MainActor private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @preconcurrency UNUserNotificationCenterDelegate {
   private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+  private let updaterController = SPUStandardUpdaterController(
+    startingUpdater: true,
+    updaterDelegate: nil,
+    userDriverDelegate: nil
+  )
   private let headerMonthLabel = NSTextField(labelWithString: "")
   private let headerMonthValue = NSTextField(labelWithString: "—")
   private let headerMonthDetail = NSTextField(labelWithString: "Czekam na dane")
@@ -265,6 +295,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
   private var targetBox: NSBox!
   private var saveButton: NSButton!
   private var panel: NSPanel!
+  private var syncWindow: SyncWindowController?
   private var timer: Timer?
   private var lastStatusKick = Date.distantPast
   private lazy var normalMenuIcon = menuIcon()
@@ -274,6 +305,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
   private var configuredWorkdayHours = savedSetting("WORKDAY_HOURS", fallback: environment["THIS_IS_LOGGED_WORKDAY_HOURS"] ?? "8")
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    NSApp.mainMenu = makeMainMenu()
     let center = UNUserNotificationCenter.current()
     center.delegate = self
     registerNotificationCategories(center)
@@ -283,7 +315,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     refresh()
     installAgentsIfNeeded()
     if CommandLine.arguments.contains("--show-panel") || !configurationComplete(readSettings()) { showSettings() }
-    timer = Timer.scheduledTimer(timeInterval: 10, target: self, selector: #selector(refresh), userInfo: nil, repeats: true)
+    timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated { self?.refresh() }
+    }
   }
 
   private func setupMenu() {
@@ -334,6 +368,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     menu.addItem(.separator())
     menu.addItem(sectionItem("APLIKACJA"))
     menu.addItem(actionItem("Ustawienia i połączenia…", #selector(showSettings), ","))
+    let updateItem = NSMenuItem(
+      title: "Sprawdź aktualizacje…",
+      action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+      keyEquivalent: ""
+    )
+    updateItem.target = updaterController
+    menu.addItem(updateItem)
     menu.addItem(actionItem(configuredSyncEnabled ? "Otwórz log synchronizacji" : "Otwórz log monitoringu", #selector(openLog), "l"))
     menu.addItem(.separator())
     menu.addItem(actionItem("Zakończ", #selector(quit), "q"))
@@ -401,6 +442,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     )
     panel.title = "This Is Logged"
     panel.isReleasedWhenClosed = false
+    panel.hidesOnDeactivate = false
     panel.center()
 
     let root = NSStackView()
@@ -442,6 +484,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     for field in [sourceURLField, sourceEmailField, sourceTokenField, targetURLField, targetEmailField, targetTokenField, targetIssueField] {
       field.widthAnchor.constraint(equalToConstant: 365).isActive = true
+    }
+    for field in [sourceURLField, sourceEmailField, sourceTokenField, targetURLField, targetEmailField, targetTokenField,
+                  targetIssueField, syncTimeField, reminderTimeField, workdayHoursField] {
+      field.menu = makeTextEditingMenu()
     }
     sourceURLField.placeholderString = "https://firma.atlassian.net"
     sourceEmailField.placeholderString = "Wymagany dla Jira Cloud; pusty dla Server/DC"
@@ -521,7 +567,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
   func menuWillOpen(_ menu: NSMenu) { refresh() }
 
-  @objc private func refresh() {
+  private func refresh() {
     let text = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
     let runs = configuredSyncEnabled ? parseLog(text) : []
     var icon = "clock"
@@ -736,6 +782,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
   }
 
   @objc private func showSettings() {
+    if panel.isVisible {
+      NSApplication.shared.activate(ignoringOtherApps: true)
+      panel.makeKeyAndOrderFront(nil)
+      return
+    }
     let values = readSettings()
     sourceURLField.stringValue = values["SRC_URL"] ?? ""
     sourceEmailField.stringValue = values["SRC_EMAIL"] ?? ""
@@ -786,24 +837,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
   }
 
   private func openInteractive(_ selectedPeriod: String) {
-    let env = ProcessInfo.processInfo.environment
-    let runtime = Bundle.main.resourceURL?.appendingPathComponent("runtime")
-    guard let node = env["THIS_IS_LOGGED_NODE"] ?? runtime?.appendingPathComponent("node").path,
-          let script = env["THIS_IS_LOGGED_SCRIPT"] ?? runtime?.appendingPathComponent("this-is-logged.mjs").path else { return }
-    let appleScript = """
-    on run argv
-      set commandLine to quoted form of item 1 of argv & " " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv
-      if item 4 of argv is not "" then set commandLine to "THIS_IS_LOGGED_ENV=" & quoted form of item 4 of argv & " " & commandLine
-      tell application "Terminal"
-        activate
-        do script commandLine
-      end tell
-    end run
-    """
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    task.arguments = ["-e", appleScript, node, script, selectedPeriod, env["THIS_IS_LOGGED_ENV"] ?? ""]
-    try? task.run()
+    syncWindow = SyncWindowController(period: selectedPeriod) { [weak self] in self?.refreshReports() }
+    syncWindow?.showWindow(nil)
   }
 
   @objc private func saveSettings() {
@@ -850,39 +885,37 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
       return
     }
 
-    let values = [
-      "SRC_URL": sourceURL, "SRC_EMAIL": sourceEmail, "SRC_TOKEN": sourceToken,
-      "SYNC_ENABLED": synchronization ? "1" : "0",
-      "DST_URL": targetURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : targetURL,
-      "DST_EMAIL": targetEmail, "DST_TOKEN": targetToken, "DST_ISSUE": targetIssue,
-      "COMMENT_KEYS": commentKeysToggle.state == .on ? "1" : "0",
-      "SYNC_TIME": sync, "REMINDER_TIME": reminder, "WORKDAY_HOURS": String(hours),
-    ]
-    guard let runtime = Bundle.main.resourceURL?.appendingPathComponent("runtime") else { return }
-    let node = environment["THIS_IS_LOGGED_NODE"] ?? runtime.appendingPathComponent("node").path
-    let script = environment["THIS_IS_LOGGED_SCRIPT"] ?? runtime.appendingPathComponent("this-is-logged.mjs").path
-    let installer = runtime.appendingPathComponent("macos/install-agents.mjs").path
-    let content = serializedSettings(values)
-    let temporary = configURL.deletingLastPathComponent().appendingPathComponent(".this-is-logged.env.\(UUID().uuidString).tmp")
+    guard let sourceAddress = URL(string: sourceURL), let executable = Bundle.main.executableURL else { return }
+    let targetAddress = synchronization ? URL(string: targetURL) : nil
+    let settings = AppSettings(
+      source: JiraCredentials(url: sourceAddress, email: sourceEmail, token: sourceToken),
+      synchronizationEnabled: synchronization,
+      target: targetAddress.map { JiraCredentials(url: $0, email: targetEmail, token: targetToken) },
+      targetIssue: targetIssue,
+      commentIssueKeys: commentKeysToggle.state == .on,
+      synchronizationTime: sync,
+      reminderTime: reminder,
+      workdayHours: hours
+    )
+    let appURL = Bundle.main.bundleURL
 
     saveButton.isEnabled = false
     settingsProgress.startAnimation(nil)
     settingsFeedback.textColor = .secondaryLabelColor
     settingsFeedback.stringValue = synchronization ? "Sprawdzam obie Jiry…" : "Sprawdzam Jirę główną…"
-    DispatchQueue.global(qos: .userInitiated).async {
-      defer { try? FileManager.default.removeItem(at: temporary) }
+    Task.detached {
       do {
-        guard [node, script, installer].allSatisfy({ FileManager.default.isExecutableFile(atPath: $0) || FileManager.default.fileExists(atPath: $0) }) else {
-          throw NSError(domain: "ThisIsLogged", code: 2, userInfo: [NSLocalizedDescriptionKey: "Aplikacja jest niekompletna. Zainstaluj ją ponownie z paczki DMG."])
+        let source = JiraClient(credentials: settings.source)
+        _ = try await source.currentUser()
+        if settings.synchronizationEnabled, let target = settings.target {
+          let client = JiraClient(credentials: target)
+          _ = try await client.currentUser()
+          _ = try await client.issueSummary(settings.targetIssue)
         }
-        try content.write(to: temporary, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
-        _ = try self.runProcess(node, [script, "--check-config"], environment: ["THIS_IS_LOGGED_ENV": temporary.path])
-        try content.write(to: configURL, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
-        _ = try self.runProcess(node, [installer, configURL.path, Bundle.main.bundleURL.path])
+        try SettingsStore().save(settings)
+        try LaunchdManager().reconcile(settings: settings, executable: executable, app: appURL)
         let persistent = deliverNotification("Konfiguracja działa. Monitoring raportów jest aktywny.") && persistentNotificationsEnabled()
-        DispatchQueue.main.async {
+        await MainActor.run {
           self.configuredSyncEnabled = synchronization
           self.configuredSyncTime = sync
           self.configuredReminderTime = reminder
@@ -900,7 +933,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
           self.refreshReports()
         }
       } catch {
-        DispatchQueue.main.async {
+        await MainActor.run {
           self.saveButton.isEnabled = true
           self.settingsProgress.stopAnimation(nil)
           self.settingsFeedback.textColor = .systemRed
@@ -910,33 +943,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
   }
 
-  private func runProcess(_ executable: String, _ arguments: [String], environment additions: [String: String] = [:]) throws -> String {
-    let task = Process()
-    let output = Pipe()
-    task.executableURL = URL(fileURLWithPath: executable)
-    task.arguments = arguments
-    task.environment = ProcessInfo.processInfo.environment.merging(additions) { _, new in new }
-    task.standardOutput = output
-    task.standardError = output
-    try task.run()
-    task.waitUntilExit()
-    let message = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-    if task.terminationStatus != 0 {
-      throw NSError(domain: "ThisIsLogged", code: Int(task.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? "Proces konfiguracji zakończył się błędem." : message])
-    }
-    return message
-  }
-
   private func installAgentsIfNeeded() {
     let agent = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent("Library/LaunchAgents/\(statusLabel).plist")
-    guard configurationComplete(readSettings()), !FileManager.default.fileExists(atPath: agent.path),
-          let runtime = Bundle.main.resourceURL?.appendingPathComponent("runtime") else { return }
-    let node = runtime.appendingPathComponent("node").path
-    let installer = runtime.appendingPathComponent("macos/install-agents.mjs").path
-    DispatchQueue.global(qos: .utility).async {
+    guard configurationComplete(readSettings()), let executable = Bundle.main.executableURL else { return }
+    let installed = (try? String(contentsOf: agent, encoding: .utf8))?.contains(executable.path) == true
+    guard !installed else { return }
+    let appURL = Bundle.main.bundleURL
+    Task.detached {
       do {
-        _ = try self.runProcess(node, [installer, configURL.path, Bundle.main.bundleURL.path])
+        let settings = try SettingsStore().load()
+        try LaunchdManager().reconcile(settings: settings, executable: executable, app: appURL)
       } catch {
         fputs("migration: \(error.localizedDescription)\n", stderr)
       }
@@ -972,7 +989,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         item.menu?.items.contains(where: { $0.attributedTitle?.string == "SYNCHRONIZACJA" }) == syncEnabled &&
         bounds.contains(sourceFrame) && sourceFrame.height > 0 &&
         (!syncEnabled || bounds.contains(syncFrame) && syncFrame.height > 0) &&
-        bounds.contains(saveFrame) && saveFrame.height > 0,
+        bounds.contains(saveFrame) && saveFrame.height > 0 && !panel.hidesOnDeactivate,
       "Opcje są poza widocznym obszarem"
     )
     print("ok")
@@ -1009,6 +1026,30 @@ private extension NSView {
   var subviewsRecursive: [NSView] { subviews + subviews.flatMap(\.subviewsRecursive) }
 }
 
+private final class AsyncFailure: @unchecked Sendable { var error: Error? }
+
+private func runAgentMode(_ operation: @escaping @Sendable () async throws -> Void) -> Never {
+  let finished = DispatchSemaphore(value: 0)
+  let result = AsyncFailure()
+  Task.detached {
+    defer { finished.signal() }
+    do { try await operation() } catch { result.error = error }
+  }
+  finished.wait()
+  if let error = result.error {
+    fputs("niepowodzenie: \(error.localizedDescription)\n", stderr)
+    exit(1)
+  }
+  exit(0)
+}
+
+private func syncMonth(_ now: LocalDay) -> (LocalDay, LocalDay) {
+  let first = LocalDay("\(now.monthID)-01")!
+  return (first, first.adding(months: 1).adding(days: -1))
+}
+
+private func nativeHours(_ seconds: Int) -> String { String(format: "%.2f", Double(seconds) / 3600) }
+
 if let notify = CommandLine.arguments.firstIndex(of: "--notify"), CommandLine.arguments.indices.contains(notify + 1) {
   exit(deliverNotification(CommandLine.arguments[notify + 1]) ? 0 : 1)
 } else if let notify = CommandLine.arguments.firstIndex(of: "--notify-collision"), CommandLine.arguments.indices.contains(notify + 1) {
@@ -1025,6 +1066,11 @@ if let notify = CommandLine.arguments.firstIndex(of: "--notify"), CommandLine.ar
   let delegate = AppDelegate()
   delegate.layoutSelfcheck(syncEnabled: false)
   withExtendedLifetime(delegate) {}
+} else if CommandLine.arguments.contains("--sync-layout-selfcheck") {
+  _ = NSApplication.shared
+  let controller = SyncWindowController(period: period()) {}
+  controller.layoutSelfcheck()
+  withExtendedLifetime(controller) {}
 } else if CommandLine.arguments.contains("--selfcheck") {
   let runs = parseLog("""
   --- 2026-09-01T21:00:00.000Z ---
@@ -1045,11 +1091,64 @@ if let notify = CommandLine.arguments.firstIndex(of: "--notify"), CommandLine.ar
   let status = try! JSONDecoder().decode(ReportStatus.self, from: Data(#"{"checkedAt":"2026-09-02T14:00:00.000Z","syncEnabled":false,"seconds":12600,"expectedSeconds":28800,"today":{"from":"2026-09-02","to":"2026-09-02","workingDays":1,"sourceSeconds":12600,"targetSeconds":null,"missing":[{"date":"2026-09-02","sourceSeconds":12600}],"differences":null},"monthCapacity":{"workingDays":22,"daysOff":8,"expectedSeconds":633600}}"#.utf8))
   precondition(status.syncEnabled == false && status.today?.missing.count == 1 && status.today?.differences == nil && status.monthCapacity?.workingDays == 22, "status")
   precondition(clockParts("23:05")?.hour == 23 && clockParts("24:00") == nil, "clock")
-  let config = updatedConfig("SRC_TOKEN=secret\nSYNC_TIME=18:00\n", sync: "19:15", reminder: "16:00", hours: "8")
-  precondition(config.contains("SRC_TOKEN=secret") && config.contains("SYNC_TIME=19:15") && config.contains("REMINDER_TIME=16:00"), "config")
-  let monitoringConfig = updatedConfig("SRC_TOKEN=secret\nSYNC_TIME=18:00\n", sync: nil, reminder: "17:00", hours: "7.5")
-  precondition(monitoringConfig.contains("SYNC_TIME=18:00") && monitoringConfig.contains("REMINDER_TIME=17:00"), "monitoring config")
+  precondition(textEditingCommands.contains {
+    $0.action == #selector(NSText.paste(_:)) && $0.key == "v" && $0.modifiers == .command
+  }, "paste shortcut")
   print("ok")
+} else if CommandLine.arguments.contains("--agent-status") {
+  runAgentMode {
+    let settings = try SettingsStore().load()
+    let state = try await SnapshotStore().refresh(using: .live(settings: settings))
+    print("\(state.checkedAt) miesiąc: \(nativeHours(state.month?.sourceSeconds ?? 0))/\(nativeHours(state.monthCapacity?.expectedSeconds ?? 0))h")
+  }
+} else if CommandLine.arguments.contains("--agent-reminder") {
+  runAgentMode {
+    let settings = try SettingsStore().load()
+    let decision = try await TimeReportEngine.live(settings: settings).reminder()
+    if let message = decision.message, !deliverNotification(message) {
+      throw NSError(domain: "ThisIsLogged", code: 3, userInfo: [NSLocalizedDescriptionKey: "Nie udało się wyświetlić powiadomienia."])
+    }
+    print(decision.message ?? "Wszystkie dni robocze są kompletne.")
+  }
+} else if CommandLine.arguments.contains("--agent-sync") {
+  print("--- \(TimeReportEngine.iso(Date())) ---")
+  runAgentMode {
+    let settings = try SettingsStore().load()
+    let engine = TimeReportEngine.live(settings: settings)
+    let now = LocalDay(Date())
+    let (from, to) = syncMonth(now)
+    let plan = try await engine.syncPlan(from: from, to: to)
+    for item in plan.items {
+      switch item.state {
+      case .add: print("\(item.day)  \(nativeHours(item.sourceSeconds))h  \(item.issueKeys.joined(separator: ", "))")
+      case .synced: print("\(item.day)  \(nativeHours(item.sourceSeconds))h  już zsynchronizowane")
+      case .collision: print("\(item.day)  \(nativeHours(item.sourceSeconds))h  KOLIZJA: w celu masz \(nativeHours(item.targetSeconds))h - pomijam")
+      }
+    }
+    if CommandLine.arguments.contains("--dry-run") {
+      let seconds = plan.items.filter { $0.state == .add }.reduce(0) { $0 + $1.sourceSeconds }
+      print("PODGLĄD: \(nativeHours(seconds))h -> \(settings.targetIssue) (\(now.monthID))")
+      return
+    }
+    let result = try await engine.execute(plan)
+    _ = try? await SnapshotStore().refresh(using: engine)
+    print("zapisano: \(nativeHours(result.writtenSeconds))h -> \(settings.targetIssue) (\(now.monthID))")
+    if result.collisionsSkipped > 0 {
+      _ = deliverNotification("Wykryto \(result.collisionsSkipped) różnice w \(now.monthID). Automatyzacja niczego nie nadpisała.", category: collisionCategory)
+    }
+  }
+} else if CommandLine.arguments.contains("--check-config-native") {
+  runAgentMode {
+    let settings = try SettingsStore().load()
+    let source = try await JiraClient(credentials: settings.source).currentUser()
+    print("Jira: \(source.displayName)")
+    if settings.synchronizationEnabled, let target = settings.target {
+      let client = JiraClient(credentials: target)
+      let user = try await client.currentUser()
+      let issue = try await client.issueSummary(settings.targetIssue)
+      print("Cel: \(user.displayName)\nZadanie: \(issue)")
+    }
+  }
 } else {
   let app = NSApplication.shared
   let delegate = AppDelegate()

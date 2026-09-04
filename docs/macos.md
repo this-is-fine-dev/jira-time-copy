@@ -1,146 +1,81 @@
 # This Is Logged na macOS
 
-Ten przewodnik opisuje aplikację w pasku menu, monitoring raportów, opcjonalną synchronizację,
-zadania `launchd`, powiadomienia i diagnostykę.
+## Architektura
+
+`This Is Logged.app` zawiera jedną natywną binarkę Swift. Ta sama binarka obsługuje menu oraz trzy
+tryby uruchamiane w tle przez `launchd`:
+
+```text
+ThisIsLogged --agent-status
+ThisIsLogged --agent-reminder
+ThisIsLogged --agent-sync
+```
+
+Żaden tryb nie otwiera Terminala. Interfejs korzysta z AppKit, a komunikacja z Jirą z `URLSession`.
 
 ## Instalacja i aktualizacja
 
-Otwórz `This Is Logged.dmg`, przeciągnij aplikację do katalogu **Applications** i uruchom ją.
-Pierwszy start automatycznie pokazuje natywny konfigurator. Nie jest potrzebny Terminal, Node.js,
-ani pnpm.
+Otwórz DMG, przeciągnij aplikację do **Applications** i ją uruchom. Pierwszy start otwiera
+konfigurator, jeśli brakuje poprawnych ustawień.
 
-```text
-/Applications/This Is Logged.app
-```
-
-Konfigurator zachowuje dotychczasowe wartości, sprawdza wymagane połączenia przed zapisem i
-uzgadnia właściwy zestaw agentów `launchd`. Wszystkie agenty używają backendu oraz runtime Node
-dołączonego do aplikacji, dlatego repozytorium może zostać usunięte po instalacji.
-
-## Tryby
-
-### Monitoring
-
-Wymaga tylko Jiry głównej. Aplikacja odczytuje worklogi, liczy kompletność raportów i przypomina o
-brakach. Nie łączy się z drugą Jirą i nie instaluje procesu wykonującego zapis.
-
-### Monitoring i synchronizacja
-
-Dodatkowo wymaga Jiry docelowej oraz zbiorczego zadania. Oprócz monitoringu porównuje dzienne sumy
-i może je kopiować automatycznie lub interaktywnie.
+Aktualizacja wersji Node importuje `~/.this-is-logged.env` do nowego magazynu, przełącza istniejące
+plisty na binarkę Swift i zachowuje `status.json`, logi oraz stary plik ENV jako kopię zapasową.
 
 ## Pliki
 
-Aktualizacja jednorazowo przenosi konfigurację, stan, logi i agenty ze starej nazwy, zachowując
-dotychczasowe dane.
-
 | Element | Lokalizacja |
 |---|---|
-| Konfiguracja | `~/.this-is-logged.env` |
-| Aplikacja | `/Applications/This Is Logged.app` |
+| Aplikacja | `/Applications/This Is Logged.app` lub `~/Applications/This Is Logged.app` |
+| Ustawienia i tokeny | `~/Library/Application Support/this-is-logged/settings.json` (`0600`) |
 | Stan | `~/Library/Application Support/this-is-logged/status.json` |
 | Agenty | `~/Library/LaunchAgents/dev.this-is-fine.this-is-logged.*.plist` |
 | Logi | `~/Library/Logs/this-is-logged*.log` |
 
-Konfiguracja, stan i logi mają uprawnienia `600`.
+Tokeny są przechowywane w pliku ustawień, dostępnym wyłącznie dla konta użytkownika. Dzięki temu
+aktualizacje lokalnych buildów nie wywołują systemowych monitów o dostęp.
 
 ## Zadania `launchd`
 
-### Status — zawsze
+### Status
 
-`dev.this-is-fine.this-is-logged.status` startuje po instalacji, a później co 60 sekund.
+`dev.this-is-fine.this-is-logged.status` startuje przy instalacji, a później co 60 sekund. Sprawdza
+dzisiaj, wczoraj, zakończone dni tygodnia i miesiąca oraz miesięczny plan. W poniedziałek zakres
+tygodniowy obejmuje poprzedni tydzień pracy.
 
-Sprawdza:
+Przy utracie VPN zachowuje ostatni poprawny raport i zapisuje osobno czas nieudanej próby.
 
-- dzisiaj;
-- wczoraj;
-- zakończone dni aktualnego tygodnia;
-- w poniedziałek cały poprzedni tydzień;
-- zakończone dni bieżącego miesiąca;
-- miesięczny plan oraz sumę zaraportowaną do dzisiaj.
+### Przypomnienie
 
-W trybie synchronizacji dodatkowo czyta cel i wylicza różnice. Awaria celu nie usuwa poprawnego
-stanu Jiry głównej.
+`dev.this-is-fine.this-is-logged.reminder` działa od poniedziałku do piątku o godzinie ustawionej
+w aplikacji. Alarmuje zarówno przy 0 h, jak i przy częściowo uzupełnionym dniu. Komunikat wymienia
+również wcześniejsze niepełne dni miesiąca.
 
-### Przypomnienie — zawsze
+### Synchronizacja
 
-`dev.this-is-fine.this-is-logged.reminder` działa od poniedziałku do piątku o `REMINDER_TIME`.
+`dev.this-is-fine.this-is-logged.sync` istnieje wyłącznie przy włączonej drugiej Jirze. Dodaje
+brakujące wartości, pomija zgodne i zgłasza różnice do ręcznego rozwiązania.
 
-| Czas przy normie 8 h | Wynik |
-|---:|---|
-| `0.00 h` | Powiadomienie o pustym dniu. |
-| `2.00 h` | Powiadomienie `2.00/8.00 h`. |
-| `8.00 h` lub więcej | Brak powiadomienia. |
+### Menu
 
-Komunikat wymienia również wcześniejsze niepełne dni miesiąca. Weekendy i polskie święta ustawowe
-są pomijane. Urlopy wymagają osobnego kalendarza.
+`dev.this-is-fine.this-is-logged.menu` uruchamia aplikację po zalogowaniu użytkownika.
 
-### Menu — zawsze
+## Synchronizacja interaktywna
 
-`dev.this-is-fine.this-is-logged.menu` utrzymuje ikonę w pasku, czyta `status.json`, obsługuje
-ustawienia i powiadomienia.
+Natywne okno pokazuje źródło, cel i decyzję dla każdego dnia. Domyślnie kolizje są pomijane.
+Nadpisanie usuwa tylko worklogi zalogowanego użytkownika z wybranego dnia i zawsze wymaga
+końcowego potwierdzenia.
 
-### Synchronizacja — opcjonalna
-
-`dev.this-is-fine.this-is-logged.sync` istnieje tylko przy `SYNC_ENABLED=1`. O ustawionej godzinie
-kopiuje brakujące dzienne sumy bieżącego miesiąca do zadania docelowego.
-
-Wyłączenie dodatku powoduje `bootout` agenta i usunięcie jego plista. Stary log i dane celu zostają
-zachowane, ale nic ich nie uruchamia.
-
-## Menu
-
-Nagłówek zawsze pokazuje:
-
-- aktualny miesiąc;
-- godziny zaraportowane względem planu;
-- kompletność zamkniętych dni;
-- raport dzisiejszy względem dziennej normy.
-
-Sekcja **Raporty** pozwala rozwinąć konkretny zakres i zobaczyć daty braków. W trybie jednej Jiry
-nie pojawiają się żadne ostrzeżenia o niesprawdzonym celu.
-
-Sekcja **Monitoring** pokazuje harmonogram przypomnienia i pozwala wymusić odczyt.
-
-Sekcja **Synchronizacja** pojawia się wyłącznie po skonfigurowaniu drugiej Jiry. Zawiera:
-
-- ostatni wynik automatycznego zapisu;
-- harmonogram;
-- synchronizację natychmiastową;
-- tryb interaktywny dla dnia lub miesiąca;
-- pięć ostatnich uruchomień.
-
-W sekcji **Aplikacja** można otworzyć ustawienia, uruchomić kreator połączeń, zobaczyć właściwy log
-i zakończyć aplikację.
-
-## Ustawienia
-
-Okno **Ustawienia i połączenia** obejmuje Jirę główną, godzinę przypomnienia i długość pełnego dnia.
-Przełącznik synchronizacji odsłania Jirę docelową, zadanie, komentarze oraz godzinę automatycznego
-zapisu. Tokeny są polami chronionymi.
-
-Przycisk **Sprawdź i zapisz** najpierw loguje się do wymaganych instancji oraz sprawdza zadanie
-docelowe. Dopiero poprawna konfiguracja zastępuje plik z sekretami i przeładowuje `launchd`.
+Kliknięcie akcji w powiadomieniu o kolizji otwiera to samo okno.
 
 ## Powiadomienia
-
-Tytuł powiadomień to **This Is Logged**.
-
-Monitoring może zgłosić:
-
-- pusty lub niepełny dzisiejszy raport;
-- braki z poprzednich dni;
-- błąd połączenia z Jirą główną.
-
-Synchronizacja może dodatkowo zgłosić błąd celu lub różnice wymagające ręcznej decyzji.
 
 Jeśli komunikat znika automatycznie:
 
 1. otwórz **Ustawienia systemowe → Powiadomienia → This Is Logged**;
 2. włącz powiadomienia;
-3. wybierz styl **Stałe** zamiast **Tymczasowe**.
+3. wybierz styl **Stałe**.
 
-Kreator odczytuje faktyczne ustawienie. macOS nie pozwala aplikacji samodzielnie kliknąć tej opcji.
+macOS nie pozwala aplikacji ustawić stylu bez decyzji użytkownika.
 
 ## Logi
 
@@ -148,11 +83,8 @@ Kreator odczytuje faktyczne ustawienie. macOS nie pozwala aplikacji samodzielnie
 |---|---|
 | `this-is-logged-status.log` | Odczyty i analiza raportów. |
 | `this-is-logged-reminder.log` | Kontrola braków i powiadomienia. |
-| `this-is-logged.log` | Wyłącznie opcjonalna synchronizacja. |
+| `this-is-logged.log` | Opcjonalna synchronizacja. |
 | `this-is-logged-menu.log` | Błędy aplikacji AppKit. |
-
-W trybie monitoringu akcja otwarcia logu prowadzi do logu statusu. Przy aktywnej synchronizacji
-prowadzi do logu zapisu.
 
 ## Diagnostyka
 
@@ -160,49 +92,30 @@ prowadzi do logu zapisu.
 launchctl print gui/$(id -u)/dev.this-is-fine.this-is-logged.menu
 launchctl print gui/$(id -u)/dev.this-is-fine.this-is-logged.status
 launchctl print gui/$(id -u)/dev.this-is-fine.this-is-logged.reminder
-```
-
-Agent synchronizacji powinien istnieć tylko po jej włączeniu:
-
-```bash
 launchctl print gui/$(id -u)/dev.this-is-fine.this-is-logged.sync
 ```
 
-Zadania kalendarzowe zwykle pokazują `not running` pomiędzy wykonaniami. Agent menu powinien mieć
-stan `running`.
+Zadania kalendarzowe zwykle mają stan `not running` pomiędzy wykonaniami.
 
 ## Typowe problemy
 
 ### Menu pokazuje stare dane
 
-Wybierz **Odśwież dane** i sprawdź `this-is-logged-status.log`. Menu odświeża widok co 10 sekund,
-a agent pobiera nowe worklogi co minutę.
+Wybierz **Odśwież dane**. Menu czyta cache co 10 sekund, a agent pobiera dane co minutę.
 
-### Jira jest dostępna tylko przez VPN
+### Jira działa tylko przez VPN
 
-Po rozłączeniu VPN menu zachowuje ostatni poprawny odczyt i oznacza go jako `offline · dane HH:MM`.
-Po ponownym połączeniu wartości odświeżą się automatycznie w ciągu minuty.
+Po rozłączeniu menu pokazuje ostatni poprawny odczyt jako `offline · dane HH:MM`. Po połączeniu
+wartości odświeżą się automatycznie.
 
-### Brak drugiej Jiry jest pokazywany jako błąd
+### Brak drugiej Jiry jest błędem
 
-Otwórz **Ustawienia i połączenia** i wyłącz synchronizację. W tym trybie brak celu jest poprawnym
-stanem.
+Wyłącz synchronizację w ustawieniach. Monitoring nie wymaga celu.
 
-### Synchronizacja nadal uruchamia się po wyłączeniu
+### Synchronizacja działa po wyłączeniu
 
-Zapisz ponownie ustawienia. Aplikacja zatrzyma stary agent i usunie dokładnie
-`dev.this-is-fine.this-is-logged.sync.plist`.
-
-### Zmieniła się wersja Node.js
-
-Nie wymaga działania. Paczka zawiera własny runtime, a plisty nie używają Node.js zainstalowanego
-w systemie.
-
-### Powiadomienie pojawia się i znika
-
-W ustawieniach powiadomień wybierz styl **Stałe**.
+Zapisz ustawienia ponownie. Aplikacja zatrzyma i usunie agent synchronizacji.
 
 ### Automatyzacja zgłasza różnicę
 
-Nic nie zostało nadpisane. Otwórz synchronizację interaktywną i wybierz „Zsumuj”, „Pomiń” albo
-„Nadpisz”.
+Nic nie zostało nadpisane. Otwórz synchronizację interaktywną i wybierz decyzję dla wskazanego dnia.
