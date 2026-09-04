@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Pilnuje raportów w Jirze i opcjonalnie kopiuje je do drugiej instancji.
 //
-//   pnpm configure                    # konfiguracja (zapisuje do ~/.jira-time-copy.env)
+//   pnpm configure                    # konfiguracja (zapisuje do ~/.this-is-logged.env)
 //   pnpm start                        # interaktywnie: wybor okresu, dni i zapisu
 //   pnpm start 2026-07                # to samo, z gotowym miesiacem
 //   pnpm start 2026-07-15             # to samo, z gotowym dniem
@@ -26,7 +26,7 @@ import {
 } from './lib/config.mjs'
 import { analyzeReports, range, reportWindow, today } from './lib/reporting.mjs'
 
-const CONFIG = process.env.THIS_IS_LOGGED_ENV ?? process.env.JIRA_TIME_COPY_ENV ?? path.join(os.homedir(), '.jira-time-copy.env')
+const CONFIG = process.env.THIS_IS_LOGGED_ENV ?? path.join(os.homedir(), '.this-is-logged.env')
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 
 const jira = (base, token, email) => {
@@ -299,6 +299,24 @@ const poster = (dst, issue, withKeys) => (d, secs, keys) =>
 const syncState = (sourceSecs, target) =>
   !target?.secs ? 'add' : target.secs === sourceSecs ? 'synced' : 'collision'
 
+const previousStatus = (file) => {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+const statusState = (previous, checkedAt, expectedSeconds, synchronization) => ({
+  ...previous,
+  checkedAt,
+  lastSuccessfulAt: previous.lastSuccessfulAt ?? (previous.today ? previous.checkedAt : undefined),
+  expectedSeconds,
+  syncEnabled: synchronization,
+  error: undefined,
+  targetError: undefined,
+})
+
 const fetchBoth = async (cfg, from, to) => {
   const src = jira(cfg.SRC_URL, cfg.SRC_TOKEN, cfg.SRC_EMAIL)
   const dst = jira(cfg.DST_URL, cfg.DST_TOKEN, cfg.DST_EMAIL)
@@ -308,7 +326,7 @@ const fetchBoth = async (cfg, from, to) => {
 }
 
 const notification = (message, collision = false) => {
-  const notifier = process.env.THIS_IS_LOGGED_NOTIFIER ?? process.env.JIRA_TIME_COPY_NOTIFIER
+  const notifier = process.env.THIS_IS_LOGGED_NOTIFIER
   if (notifier)
     return execFileSync(notifier, [collision ? '--notify-collision' : '--notify', message])
   return execFileSync('/usr/bin/osascript', [
@@ -365,12 +383,8 @@ async function pollStatus() {
   const expectedHours = Number(cfg.WORKDAY_HOURS || 8)
   if (!(expectedHours > 0 && expectedHours <= 24)) throw new Error('WORKDAY_HOURS musi być liczbą od 0 do 24.')
   const expected = expectedHours * 3600
-  const file = process.env.THIS_IS_LOGGED_STATUS ?? process.env.JIRA_TIME_COPY_STATUS ?? path.join(os.homedir(), 'Library', 'Application Support', 'jira-time-copy', 'status.json')
-  let state = {
-    checkedAt: new Date().toISOString(),
-    expectedSeconds: expected,
-    syncEnabled: syncEnabled(cfg),
-  }
+  const file = process.env.THIS_IS_LOGGED_STATUS ?? path.join(os.homedir(), 'Library', 'Application Support', 'this-is-logged', 'status.json')
+  let state = statusState(previousStatus(file), new Date().toISOString(), expected, syncEnabled(cfg))
   try {
     const src = jira(cfg.SRC_URL, cfg.SRC_TOKEN, cfg.SRC_EMAIL)
     const days = await collect(src, ident(await me(src)), from, to)
@@ -386,6 +400,7 @@ async function pollStatus() {
     const reports = analyzeReports({ now, expectedSeconds: expected, sourceDays: days, targetDays: done })
     state = {
       ...state,
+      lastSuccessfulAt: state.checkedAt,
       seconds: days[now]?.secs ?? 0,
       ...reports,
     }
@@ -646,6 +661,10 @@ async function selfcheck() {
   assert.equal(syncState(3600), 'add')
   assert.equal(syncState(3600, { secs: 3600 }), 'synced')
   assert.equal(syncState(3600, { secs: 1800 }), 'collision')
+  const cached = statusState({ checkedAt: 'old', today: { sourceSeconds: 14400 }, month: {} }, 'new', 28800, true)
+  assert.equal(cached.today.sourceSeconds, 14400)
+  assert.equal(cached.lastSuccessfulAt, 'old')
+  assert.equal(cached.checkedAt, 'new')
   const sent = []
   const capture = async (path, body) => void sent.push(body)
   await poster(capture, 'AUT-1', false)('2026-07-01', 3600, ['WP-1'])

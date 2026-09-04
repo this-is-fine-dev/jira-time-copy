@@ -22,6 +22,7 @@ blokuje odczytu raportów z Jiry głównej.
 - kontrola wczoraj, aktualnego tygodnia pracy i zakończonych dni miesiąca;
 - wskazanie konkretnych dat oraz brakujących godzin;
 - odświeżanie danych co minutę przez `launchd`;
+- zachowanie ostatniego poprawnego odczytu po rozłączeniu VPN lub utracie sieci;
 - trwałe powiadomienia o pustych i niepełnych dniach;
 - polskie święta ustawowe i weekendy wyłączone z wymaganej normy;
 - Jira Cloud oraz Jira Server/Data Center;
@@ -47,14 +48,14 @@ Konfigurator:
 
 - sprawdza logowanie do Jiry głównej i opcjonalnej Jiry docelowej przed zapisem;
 - sprawdza istnienie zadania docelowego;
-- zapisuje sekrety w `~/.jira-time-copy.env` z uprawnieniami `600`;
+- zapisuje sekrety w `~/.this-is-logged.env` z uprawnieniami `600`;
 - instaluje i przeładowuje właściwe zadania `launchd`;
 - uruchamia monitoring i sprawdza trwałe powiadomienia.
 
 Instalacja, pierwsza konfiguracja i późniejsze zmiany nie wymagają Terminala, Node.js ani pnpm.
 
-Stara kompletna konfiguracja `jira-time-copy` jest automatycznie traktowana jako konfiguracja z
-włączoną synchronizacją. Nie trzeba ponownie wpisywać tokenów.
+Przy aktualizacji stara konfiguracja `~/.jira-time-copy.env`, status, logi i agenty są jednorazowo
+migrowane do nazwy `this-is-logged`. Nie trzeba ponownie wpisywać tokenów.
 
 ### Tokeny
 
@@ -138,10 +139,8 @@ dalej.
 | `COMMENT_KEYS` | `1` dodaje klucze zadań głównych do komentarza. |
 | `SYNC_TIME` | Godzina automatycznego zapisu. |
 | `THIS_IS_LOGGED_ENV` | Alternatywna ścieżka konfiguracji. |
-| `JIRA_TIME_COPY_ENV` | Zachowany alias kompatybilności. |
 
-Techniczne ścieżki konfiguracji, logów, stanu i etykiety `launchd` zachowują stare
-`jira-time-copy`. Dzięki temu aktualizacja nie gubi ustawień ani zgody na powiadomienia.
+Techniczne ścieżki, etykiety `launchd` i bundle ID również używają nazwy `this-is-logged`.
 
 ## Testy
 

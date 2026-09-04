@@ -3,21 +3,30 @@ import Darwin
 import Foundation
 import UserNotifications
 
-private let collisionCategory = "JIRA_TIME_COPY_COLLISION"
+private let collisionCategory = "THIS_IS_LOGGED_COLLISION"
 private let resolveCollisionsAction = "RESOLVE_COLLISIONS"
 private let logURL = FileManager.default.homeDirectoryForCurrentUser
-  .appendingPathComponent("Library/Logs/jira-time-copy.log")
+  .appendingPathComponent("Library/Logs/this-is-logged.log")
 private let statusLogURL = FileManager.default.homeDirectoryForCurrentUser
-  .appendingPathComponent("Library/Logs/jira-time-copy-status.log")
+  .appendingPathComponent("Library/Logs/this-is-logged-status.log")
 private let environment = ProcessInfo.processInfo.environment
-private let reportStatusURL = URL(fileURLWithPath: environment["THIS_IS_LOGGED_STATUS"] ?? environment["JIRA_TIME_COPY_STATUS"]
-  ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/jira-time-copy/status.json").path)
+private let reportStatusURL = URL(fileURLWithPath: environment["THIS_IS_LOGGED_STATUS"]
+  ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/this-is-logged/status.json").path)
 private let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "png")
-private let syncLabel = "dev.this-is-fine.jira-time-copy.sync"
-private let reminderLabel = "dev.this-is-fine.jira-time-copy.reminder"
-private let statusLabel = "dev.this-is-fine.jira-time-copy.status"
-private let configURL = URL(fileURLWithPath: environment["THIS_IS_LOGGED_ENV"] ?? environment["JIRA_TIME_COPY_ENV"]
-  ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jira-time-copy.env").path)
+private let syncLabel = "dev.this-is-fine.this-is-logged.sync"
+private let reminderLabel = "dev.this-is-fine.this-is-logged.reminder"
+private let statusLabel = "dev.this-is-fine.this-is-logged.status"
+private let configURL: URL = {
+  if let configured = environment["THIS_IS_LOGGED_ENV"] { return URL(fileURLWithPath: configured) }
+  let home = FileManager.default.homeDirectoryForCurrentUser
+  let current = home.appendingPathComponent(".this-is-logged.env")
+  let legacy = home.appendingPathComponent(".jira-time-copy.env")
+  if !FileManager.default.fileExists(atPath: current.path), FileManager.default.fileExists(atPath: legacy.path) {
+    try? FileManager.default.moveItem(at: legacy, to: current)
+    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: current.path)
+  }
+  return current
+}()
 private let configKeys = [
   "SRC_URL", "SRC_EMAIL", "SRC_TOKEN", "SYNC_ENABLED", "DST_URL", "DST_EMAIL", "DST_TOKEN",
   "DST_ISSUE", "COMMENT_KEYS", "SYNC_TIME", "REMINDER_TIME", "WORKDAY_HOURS",
@@ -82,6 +91,7 @@ private struct Run {
 
 private struct ReportStatus: Decodable {
   let checkedAt: String
+  let lastSuccessfulAt: String?
   let syncEnabled: Bool?
   let seconds: Int?
   let expectedSeconds: Int?
@@ -259,9 +269,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
   private var lastStatusKick = Date.distantPast
   private lazy var normalMenuIcon = menuIcon()
   private var configuredSyncEnabled = savedSetting("SYNC_ENABLED", fallback: environment["THIS_IS_LOGGED_SYNC_ENABLED"] ?? "0") == "1"
-  private var configuredSyncTime = savedSetting("SYNC_TIME", fallback: environment["THIS_IS_LOGGED_SCHEDULE"] ?? environment["JIRA_TIME_COPY_SCHEDULE"] ?? "23:00")
-  private var configuredReminderTime = savedSetting("REMINDER_TIME", fallback: environment["THIS_IS_LOGGED_REMINDER"] ?? environment["JIRA_TIME_COPY_REMINDER"] ?? "16:00")
-  private var configuredWorkdayHours = savedSetting("WORKDAY_HOURS", fallback: environment["THIS_IS_LOGGED_WORKDAY_HOURS"] ?? environment["JIRA_TIME_COPY_WORKDAY_HOURS"] ?? "8")
+  private var configuredSyncTime = savedSetting("SYNC_TIME", fallback: environment["THIS_IS_LOGGED_SCHEDULE"] ?? "23:00")
+  private var configuredReminderTime = savedSetting("REMINDER_TIME", fallback: environment["THIS_IS_LOGGED_REMINDER"] ?? "16:00")
+  private var configuredWorkdayHours = savedSetting("WORKDAY_HOURS", fallback: environment["THIS_IS_LOGGED_WORKDAY_HOURS"] ?? "8")
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     let center = UNUserNotificationCenter.current()
@@ -271,6 +281,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     setupMenu()
     setupSettingsPanel()
     refresh()
+    installAgentsIfNeeded()
     if CommandLine.arguments.contains("--show-panel") || !configurationComplete(readSettings()) { showSettings() }
     timer = Timer.scheduledTimer(timeInterval: 10, target: self, selector: #selector(refresh), userInfo: nil, repeats: true)
   }
@@ -544,13 +555,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
     let showTarget = status?.syncEnabled ?? configuredSyncEnabled
     renderHeader(status)
-    if let status, status.error == nil, let checked = isoDate(status.checkedAt) {
+    if let status, status.today != nil, let checked = isoDate(status.lastSuccessfulAt ?? status.checkedAt) {
       let formatter = DateFormatter()
       formatter.dateFormat = "HH:mm"
       let expected = status.expectedSeconds ?? Int((Double(configuredWorkdayHours) ?? 8) * 3600)
       if let today = status.today {
         renderPeriod(todayStatus, label: "Dzisiaj", value: today, expected: expected, showTarget: showTarget)
-        todayStatus.title += " · \(formatter.string(from: checked))"
+        todayStatus.title += status.error == nil
+          ? " · \(formatter.string(from: checked))"
+          : " · offline · dane \(formatter.string(from: checked))"
         item.button?.title = " \(formatSeconds(today.sourceSeconds)) h"
       } else {
         todayStatus.title = "Dzisiaj · \(formatSeconds(status.seconds ?? 0)) h · \(formatter.string(from: checked))"
@@ -598,7 +611,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     formatter.locale = Locale(identifier: "pl_PL")
     formatter.dateFormat = "LLLL"
     headerMonthLabel.stringValue = formatter.string(from: Date()).uppercased(with: formatter.locale)
-    guard let status, status.error == nil else {
+    guard let status, status.today != nil else {
       headerMonthValue.stringValue = "—"
       headerMonthDetail.stringValue = "Brak danych z Jiry"
       headerTodayValue.stringValue = "Brak danych"
@@ -610,7 +623,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     } else {
       headerMonthValue.stringValue = "—"
     }
-    headerMonthDetail.stringValue = periodSummary(status.month)
+    let summary = periodSummary(status.month)
+    if status.error != nil, let checked = isoDate(status.lastSuccessfulAt ?? status.checkedAt) {
+      let time = DateFormatter()
+      time.dateFormat = "HH:mm"
+      headerMonthDetail.stringValue = "\(summary) · offline, dane z \(time.string(from: checked))"
+    } else {
+      headerMonthDetail.stringValue = summary
+    }
 
     let today = status.today
     let todaySeconds = today?.sourceSeconds ?? status.seconds ?? 0
@@ -768,8 +788,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
   private func openInteractive(_ selectedPeriod: String) {
     let env = ProcessInfo.processInfo.environment
     let runtime = Bundle.main.resourceURL?.appendingPathComponent("runtime")
-    guard let node = env["THIS_IS_LOGGED_NODE"] ?? env["JIRA_TIME_COPY_NODE"] ?? runtime?.appendingPathComponent("node").path,
-          let script = env["THIS_IS_LOGGED_SCRIPT"] ?? env["JIRA_TIME_COPY_SCRIPT"] ?? runtime?.appendingPathComponent("jira-time-copy.mjs").path else { return }
+    guard let node = env["THIS_IS_LOGGED_NODE"] ?? runtime?.appendingPathComponent("node").path,
+          let script = env["THIS_IS_LOGGED_SCRIPT"] ?? runtime?.appendingPathComponent("this-is-logged.mjs").path else { return }
     let appleScript = """
     on run argv
       set commandLine to quoted form of item 1 of argv & " " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv
@@ -782,7 +802,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     """
     let task = Process()
     task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    task.arguments = ["-e", appleScript, node, script, selectedPeriod, env["THIS_IS_LOGGED_ENV"] ?? env["JIRA_TIME_COPY_ENV"] ?? ""]
+    task.arguments = ["-e", appleScript, node, script, selectedPeriod, env["THIS_IS_LOGGED_ENV"] ?? ""]
     try? task.run()
   }
 
@@ -839,11 +859,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
       "SYNC_TIME": sync, "REMINDER_TIME": reminder, "WORKDAY_HOURS": String(hours),
     ]
     guard let runtime = Bundle.main.resourceURL?.appendingPathComponent("runtime") else { return }
-    let node = environment["THIS_IS_LOGGED_NODE"] ?? environment["JIRA_TIME_COPY_NODE"] ?? runtime.appendingPathComponent("node").path
-    let script = environment["THIS_IS_LOGGED_SCRIPT"] ?? environment["JIRA_TIME_COPY_SCRIPT"] ?? runtime.appendingPathComponent("jira-time-copy.mjs").path
+    let node = environment["THIS_IS_LOGGED_NODE"] ?? runtime.appendingPathComponent("node").path
+    let script = environment["THIS_IS_LOGGED_SCRIPT"] ?? runtime.appendingPathComponent("this-is-logged.mjs").path
     let installer = runtime.appendingPathComponent("macos/install-agents.mjs").path
     let content = serializedSettings(values)
-    let temporary = configURL.deletingLastPathComponent().appendingPathComponent(".jira-time-copy.env.\(UUID().uuidString).tmp")
+    let temporary = configURL.deletingLastPathComponent().appendingPathComponent(".this-is-logged.env.\(UUID().uuidString).tmp")
 
     saveButton.isEnabled = false
     settingsProgress.startAnimation(nil)
@@ -905,6 +925,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
       throw NSError(domain: "ThisIsLogged", code: Int(task.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? "Proces konfiguracji zakończył się błędem." : message])
     }
     return message
+  }
+
+  private func installAgentsIfNeeded() {
+    let agent = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/LaunchAgents/\(statusLabel).plist")
+    guard configurationComplete(readSettings()), !FileManager.default.fileExists(atPath: agent.path),
+          let runtime = Bundle.main.resourceURL?.appendingPathComponent("runtime") else { return }
+    let node = runtime.appendingPathComponent("node").path
+    let installer = runtime.appendingPathComponent("macos/install-agents.mjs").path
+    DispatchQueue.global(qos: .utility).async {
+      do {
+        _ = try self.runProcess(node, [installer, configURL.path, Bundle.main.bundleURL.path])
+      } catch {
+        fputs("migration: \(error.localizedDescription)\n", stderr)
+      }
+    }
   }
 
   private func command(_ arguments: [String]) throws {

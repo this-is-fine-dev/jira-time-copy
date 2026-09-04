@@ -11,7 +11,7 @@ if (process.platform !== 'darwin') throw new Error('Aplikacja wymaga macOS.')
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const home = os.homedir()
 const packageMode = process.argv.includes('--dmg')
-const configFile = process.argv.slice(2).find((arg) => !arg.startsWith('--')) ?? path.join(home, '.jira-time-copy.env')
+const configFile = process.argv.slice(2).find((arg) => !arg.startsWith('--')) ?? path.join(home, '.this-is-logged.env')
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const arch = process.arch === 'x64' ? 'x86_64' : process.arch
 const minimumMacOS = '13.5'
@@ -21,7 +21,7 @@ const contents = path.join(app, 'Contents')
 const resources = path.join(contents, 'Resources')
 const runtime = path.join(resources, 'runtime')
 const menuBinary = path.join(contents, 'MacOS', 'ThisIsLogged')
-const source = path.join(root, 'macos', 'JiraTimeCopyMenu.swift')
+const source = path.join(root, 'macos', 'ThisIsLoggedMenu.swift')
 const iconSource = path.join(root, 'macos', 'AppIcon.png')
 const iconBundle = path.join(root, 'macos', 'AppIcon.icns')
 const cache = path.join(temporary, 'ModuleCache')
@@ -93,7 +93,7 @@ try {
 
   fs.copyFileSync(process.execPath, path.join(runtime, 'node'))
   fs.chmodSync(path.join(runtime, 'node'), 0o755)
-  for (const file of ['jira-time-copy.mjs', 'package.json']) fs.copyFileSync(path.join(root, file), path.join(runtime, file))
+  for (const file of ['this-is-logged.mjs', 'package.json']) fs.copyFileSync(path.join(root, file), path.join(runtime, file))
   fs.cpSync(path.join(root, 'lib'), path.join(runtime, 'lib'), { recursive: true })
   fs.mkdirSync(path.join(runtime, 'macos'), { recursive: true })
   fs.copyFileSync(path.join(root, 'macos', 'install-agents.mjs'), path.join(runtime, 'macos', 'install-agents.mjs'))
@@ -107,7 +107,7 @@ try {
     CFBundleDisplayName: 'This Is Logged',
     CFBundleExecutable: 'ThisIsLogged',
     CFBundleIconFile: 'AppIcon.icns',
-    CFBundleIdentifier: 'dev.this-is-fine.jira-time-copy',
+    CFBundleIdentifier: 'dev.this-is-fine.this-is-logged',
     CFBundleInfoDictionaryVersion: '6.0',
     CFBundleName: 'This Is Logged',
     CFBundlePackageType: 'APPL',

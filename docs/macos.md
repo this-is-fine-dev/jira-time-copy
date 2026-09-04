@@ -31,16 +31,16 @@ i może je kopiować automatycznie lub interaktywnie.
 
 ## Pliki
 
-Techniczne ścieżki zachowują poprzednią nazwę, aby aktualizacja nie utraciła konfiguracji i
-historii.
+Aktualizacja jednorazowo przenosi konfigurację, stan, logi i agenty ze starej nazwy, zachowując
+dotychczasowe dane.
 
 | Element | Lokalizacja |
 |---|---|
-| Konfiguracja | `~/.jira-time-copy.env` |
+| Konfiguracja | `~/.this-is-logged.env` |
 | Aplikacja | `/Applications/This Is Logged.app` |
-| Stan | `~/Library/Application Support/jira-time-copy/status.json` |
-| Agenty | `~/Library/LaunchAgents/dev.this-is-fine.jira-time-copy.*.plist` |
-| Logi | `~/Library/Logs/jira-time-copy*.log` |
+| Stan | `~/Library/Application Support/this-is-logged/status.json` |
+| Agenty | `~/Library/LaunchAgents/dev.this-is-fine.this-is-logged.*.plist` |
+| Logi | `~/Library/Logs/this-is-logged*.log` |
 
 Konfiguracja, stan i logi mają uprawnienia `600`.
 
@@ -48,7 +48,7 @@ Konfiguracja, stan i logi mają uprawnienia `600`.
 
 ### Status — zawsze
 
-`dev.this-is-fine.jira-time-copy.status` startuje po instalacji, a później co 60 sekund.
+`dev.this-is-fine.this-is-logged.status` startuje po instalacji, a później co 60 sekund.
 
 Sprawdza:
 
@@ -64,7 +64,7 @@ stanu Jiry głównej.
 
 ### Przypomnienie — zawsze
 
-`dev.this-is-fine.jira-time-copy.reminder` działa od poniedziałku do piątku o `REMINDER_TIME`.
+`dev.this-is-fine.this-is-logged.reminder` działa od poniedziałku do piątku o `REMINDER_TIME`.
 
 | Czas przy normie 8 h | Wynik |
 |---:|---|
@@ -77,12 +77,12 @@ są pomijane. Urlopy wymagają osobnego kalendarza.
 
 ### Menu — zawsze
 
-`dev.this-is-fine.jira-time-copy.menu` utrzymuje ikonę w pasku, czyta `status.json`, obsługuje
+`dev.this-is-fine.this-is-logged.menu` utrzymuje ikonę w pasku, czyta `status.json`, obsługuje
 ustawienia i powiadomienia.
 
 ### Synchronizacja — opcjonalna
 
-`dev.this-is-fine.jira-time-copy.sync` istnieje tylko przy `SYNC_ENABLED=1`. O ustawionej godzinie
+`dev.this-is-fine.this-is-logged.sync` istnieje tylko przy `SYNC_ENABLED=1`. O ustawionej godzinie
 kopiuje brakujące dzienne sumy bieżącego miesiąca do zadania docelowego.
 
 Wyłączenie dodatku powoduje `bootout` agenta i usunięcie jego plista. Stary log i dane celu zostają
@@ -146,10 +146,10 @@ Kreator odczytuje faktyczne ustawienie. macOS nie pozwala aplikacji samodzielnie
 
 | Plik | Zawartość |
 |---|---|
-| `jira-time-copy-status.log` | Odczyty i analiza raportów. |
-| `jira-time-copy-reminder.log` | Kontrola braków i powiadomienia. |
-| `jira-time-copy.log` | Wyłącznie opcjonalna synchronizacja. |
-| `jira-time-copy-menu.log` | Błędy aplikacji AppKit. |
+| `this-is-logged-status.log` | Odczyty i analiza raportów. |
+| `this-is-logged-reminder.log` | Kontrola braków i powiadomienia. |
+| `this-is-logged.log` | Wyłącznie opcjonalna synchronizacja. |
+| `this-is-logged-menu.log` | Błędy aplikacji AppKit. |
 
 W trybie monitoringu akcja otwarcia logu prowadzi do logu statusu. Przy aktywnej synchronizacji
 prowadzi do logu zapisu.
@@ -157,15 +157,15 @@ prowadzi do logu zapisu.
 ## Diagnostyka
 
 ```bash
-launchctl print gui/$(id -u)/dev.this-is-fine.jira-time-copy.menu
-launchctl print gui/$(id -u)/dev.this-is-fine.jira-time-copy.status
-launchctl print gui/$(id -u)/dev.this-is-fine.jira-time-copy.reminder
+launchctl print gui/$(id -u)/dev.this-is-fine.this-is-logged.menu
+launchctl print gui/$(id -u)/dev.this-is-fine.this-is-logged.status
+launchctl print gui/$(id -u)/dev.this-is-fine.this-is-logged.reminder
 ```
 
 Agent synchronizacji powinien istnieć tylko po jej włączeniu:
 
 ```bash
-launchctl print gui/$(id -u)/dev.this-is-fine.jira-time-copy.sync
+launchctl print gui/$(id -u)/dev.this-is-fine.this-is-logged.sync
 ```
 
 Zadania kalendarzowe zwykle pokazują `not running` pomiędzy wykonaniami. Agent menu powinien mieć
@@ -175,8 +175,13 @@ stan `running`.
 
 ### Menu pokazuje stare dane
 
-Wybierz **Odśwież dane** i sprawdź `jira-time-copy-status.log`. Menu odświeża widok co 30 sekund,
+Wybierz **Odśwież dane** i sprawdź `this-is-logged-status.log`. Menu odświeża widok co 10 sekund,
 a agent pobiera nowe worklogi co minutę.
+
+### Jira jest dostępna tylko przez VPN
+
+Po rozłączeniu VPN menu zachowuje ostatni poprawny odczyt i oznacza go jako `offline · dane HH:MM`.
+Po ponownym połączeniu wartości odświeżą się automatycznie w ciągu minuty.
 
 ### Brak drugiej Jiry jest pokazywany jako błąd
 
@@ -186,7 +191,7 @@ stanem.
 ### Synchronizacja nadal uruchamia się po wyłączeniu
 
 Zapisz ponownie ustawienia. Aplikacja zatrzyma stary agent i usunie dokładnie
-`dev.this-is-fine.jira-time-copy.sync.plist`.
+`dev.this-is-fine.this-is-logged.sync.plist`.
 
 ### Zmieniła się wersja Node.js
 

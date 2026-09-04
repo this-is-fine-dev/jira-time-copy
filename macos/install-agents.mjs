@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import assert from 'node:assert'
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -6,8 +7,31 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadConfig, missingConfig, syncEnabled } from '../lib/config.mjs'
 
+const migrate = (old, current) => {
+  if (!fs.existsSync(old)) return
+  fs.mkdirSync(path.dirname(current), { recursive: true })
+  if (!fs.existsSync(current)) fs.renameSync(old, current)
+  else fs.rmSync(old, { force: true })
+}
+
 if (process.platform !== 'darwin') throw new Error('Automatyzacja wymaga macOS.')
 if (process.argv.includes('--selfcheck')) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'this-is-logged-migration-'))
+  try {
+    const old = path.join(directory, 'old', 'status.json')
+    const current = path.join(directory, 'new', 'status.json')
+    fs.mkdirSync(path.dirname(old), { recursive: true })
+    fs.writeFileSync(old, 'cached')
+    migrate(old, current)
+    assert.equal(fs.readFileSync(current, 'utf8'), 'cached')
+    assert.ok(!fs.existsSync(old))
+    fs.writeFileSync(old, 'stale')
+    migrate(old, current)
+    assert.equal(fs.readFileSync(current, 'utf8'), 'cached')
+    assert.ok(!fs.existsSync(old))
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
   console.log('ok')
   process.exit(0)
 }
@@ -15,7 +39,10 @@ if (process.argv.includes('--selfcheck')) {
 const home = os.homedir()
 const runtime = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const app = process.argv[3] ?? path.resolve(runtime, '../../..')
-const configFile = process.argv[2] ?? path.join(home, '.jira-time-copy.env')
+const configFile = process.argv[2] ?? path.join(home, '.this-is-logged.env')
+const legacyConfig = path.join(home, '.jira-time-copy.env')
+if (configFile === path.join(home, '.this-is-logged.env') && !fs.existsSync(configFile) && fs.existsSync(legacyConfig))
+  fs.renameSync(legacyConfig, configFile)
 const cfg = loadConfig(configFile)
 const synchronization = syncEnabled(cfg)
 const missing = missingConfig(cfg, synchronization ? 'sync' : 'monitoring')
@@ -33,24 +60,36 @@ if (!(Number(workdayHours) > 0 && Number(workdayHours) <= 24))
 
 const uid = process.getuid()
 const node = process.execPath
-const script = path.join(runtime, 'jira-time-copy.mjs')
+const script = path.join(runtime, 'this-is-logged.mjs')
 const menuBinary = path.join(app, 'Contents', 'MacOS', 'ThisIsLogged')
 for (const file of [node, script, menuBinary])
   if (!fs.existsSync(file)) throw new Error(`Brak składnika aplikacji: ${file}`)
 
-const support = path.join(home, 'Library', 'Application Support', 'jira-time-copy')
+const support = path.join(home, 'Library', 'Application Support', 'this-is-logged')
+const legacySupport = path.join(home, 'Library', 'Application Support', 'jira-time-copy')
 const agents = path.join(home, 'Library', 'LaunchAgents')
 const logs = path.join(home, 'Library', 'Logs')
 const statusFile = path.join(support, 'status.json')
 const labels = {
-  menu: 'dev.this-is-fine.jira-time-copy.menu',
-  reminder: 'dev.this-is-fine.jira-time-copy.reminder',
-  status: 'dev.this-is-fine.jira-time-copy.status',
-  sync: 'dev.this-is-fine.jira-time-copy.sync',
+  menu: 'dev.this-is-fine.this-is-logged.menu',
+  reminder: 'dev.this-is-fine.this-is-logged.reminder',
+  status: 'dev.this-is-fine.this-is-logged.status',
+  sync: 'dev.this-is-fine.this-is-logged.sync',
 }
+const legacyLabels = Object.fromEntries(Object.keys(labels).map((key) => [key, `dev.this-is-fine.jira-time-copy.${key}`]))
 const plists = Object.fromEntries(Object.entries(labels).map(([key, label]) => [key, path.join(agents, `${label}.plist`)]))
-const log = (name) => path.join(logs, `jira-time-copy${name ? `-${name}` : ''}.log`)
+const log = (name) => path.join(logs, `this-is-logged${name ? `-${name}` : ''}.log`)
+const legacyLog = (name) => path.join(logs, `jira-time-copy${name ? `-${name}` : ''}.log`)
 const domain = `gui/${uid}`
+
+for (const label of Object.values(legacyLabels))
+  spawnSync('/bin/launchctl', ['bootout', `${domain}/${label}`], { stdio: 'ignore' })
+for (const label of Object.values(legacyLabels)) fs.rmSync(path.join(agents, `${label}.plist`), { force: true })
+
+migrate(path.join(legacySupport, 'status.json'), statusFile)
+fs.rmSync(legacySupport, { recursive: true, force: true })
+for (const name of ['', 'menu', 'reminder', 'status']) migrate(legacyLog(name), log(name))
+if (configFile !== legacyConfig && fs.existsSync(legacyConfig)) fs.rmSync(legacyConfig)
 
 for (const directory of [support, agents, logs]) fs.mkdirSync(directory, { recursive: true })
 for (const file of [log(''), log('menu'), log('reminder'), log('status')]) {

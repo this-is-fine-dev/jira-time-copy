@@ -4,14 +4,13 @@
   "private": true,
   "type": "module",
   "bin": {
-    "this-is-logged": "./jira-time-copy.mjs",
-    "jira-time-copy": "./jira-time-copy.mjs"
+    "this-is-logged": "./this-is-logged.mjs"
   },
   "scripts": {
-    "configure": "node jira-time-copy.mjs setup",
+    "configure": "node this-is-logged.mjs setup",
     "package:macos": "node macos/install.mjs --dmg",
-    "start": "node jira-time-copy.mjs",
-    "test": "node jira-time-copy.mjs --selfcheck"
+    "start": "node this-is-logged.mjs",
+    "test": "node this-is-logged.mjs --selfcheck"
   },
   "engines": {
     "node": ">=18"
