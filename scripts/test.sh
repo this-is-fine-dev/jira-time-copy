@@ -10,6 +10,11 @@ if rg -q 'Timer\.scheduledTimer\(timeInterval:.*#selector\(refresh\)' "$PROJECT_
   exit 1
 fi
 
+if rg -q 'CommandLine\.arguments' "$PROJECT_ROOT/macos/main.swift"; then
+  echo "CommandLine.arguments is not concurrency-safe on the release runner" >&2
+  exit 1
+fi
+
 env SDKROOT="$SDK_PATH" SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
   swift run --disable-sandbox --disable-keychain --package-path "$PROJECT_ROOT" ThisIsLoggedSelfcheck
 env SDKROOT="$SDK_PATH" SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \

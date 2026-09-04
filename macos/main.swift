@@ -40,7 +40,7 @@ private let textEditingCommands: [(title: String, action: Selector, key: String,
   ("Zaznacz wszystko", #selector(NSText.selectAll(_:)), "a", .command),
 ]
 
-private func makeTextEditingMenu() -> NSMenu {
+@MainActor private func makeTextEditingMenu() -> NSMenu {
   let menu = NSMenu(title: "Edycja")
   for (index, command) in textEditingCommands.enumerated() {
     if index == 2 { menu.addItem(.separator()) }
@@ -50,7 +50,7 @@ private func makeTextEditingMenu() -> NSMenu {
   return menu
 }
 
-private func makeMainMenu() -> NSMenu {
+@MainActor private func makeMainMenu() -> NSMenu {
   let main = NSMenu()
   let applicationItem = NSMenuItem()
   let applicationMenu = NSMenu()
@@ -204,7 +204,7 @@ private func menuIcon() -> NSImage? {
 }
 
 private func savedSetting(_ key: String, fallback: String) -> String {
-  if CommandLine.arguments.contains(where: { $0.contains("selfcheck") }) { return fallback }
+  if arguments.contains(where: { $0.contains("selfcheck") }) { return fallback }
   return readSettings()[key] ?? fallback
 }
 
@@ -314,7 +314,7 @@ private func todayPeriod() -> String {
     setupSettingsPanel()
     refresh()
     installAgentsIfNeeded()
-    if CommandLine.arguments.contains("--show-panel") || !configurationComplete(readSettings()) { showSettings() }
+    if arguments.contains("--show-panel") || !configurationComplete(readSettings()) { showSettings() }
     timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated { self?.refresh() }
     }
@@ -1050,28 +1050,30 @@ private func syncMonth(_ now: LocalDay) -> (LocalDay, LocalDay) {
 
 private func nativeHours(_ seconds: Int) -> String { String(format: "%.2f", Double(seconds) / 3600) }
 
-if let notify = CommandLine.arguments.firstIndex(of: "--notify"), CommandLine.arguments.indices.contains(notify + 1) {
-  exit(deliverNotification(CommandLine.arguments[notify + 1]) ? 0 : 1)
-} else if let notify = CommandLine.arguments.firstIndex(of: "--notify-collision"), CommandLine.arguments.indices.contains(notify + 1) {
-  exit(deliverNotification(CommandLine.arguments[notify + 1], category: collisionCategory) ? 0 : 1)
-} else if CommandLine.arguments.contains("--notification-check") {
+private let arguments = ProcessInfo.processInfo.arguments
+
+if let notify = arguments.firstIndex(of: "--notify"), arguments.indices.contains(notify + 1) {
+  exit(deliverNotification(arguments[notify + 1]) ? 0 : 1)
+} else if let notify = arguments.firstIndex(of: "--notify-collision"), arguments.indices.contains(notify + 1) {
+  exit(deliverNotification(arguments[notify + 1], category: collisionCategory) ? 0 : 1)
+} else if arguments.contains("--notification-check") {
   exit(persistentNotificationsEnabled() ? 0 : 1)
-} else if CommandLine.arguments.contains("--layout-selfcheck") {
+} else if arguments.contains("--layout-selfcheck") {
   _ = NSApplication.shared
   let delegate = AppDelegate()
   delegate.layoutSelfcheck(syncEnabled: true)
   withExtendedLifetime(delegate) {}
-} else if CommandLine.arguments.contains("--layout-selfcheck-monitoring") {
+} else if arguments.contains("--layout-selfcheck-monitoring") {
   _ = NSApplication.shared
   let delegate = AppDelegate()
   delegate.layoutSelfcheck(syncEnabled: false)
   withExtendedLifetime(delegate) {}
-} else if CommandLine.arguments.contains("--sync-layout-selfcheck") {
+} else if arguments.contains("--sync-layout-selfcheck") {
   _ = NSApplication.shared
   let controller = SyncWindowController(period: period()) {}
   controller.layoutSelfcheck()
   withExtendedLifetime(controller) {}
-} else if CommandLine.arguments.contains("--selfcheck") {
+} else if arguments.contains("--selfcheck") {
   let runs = parseLog("""
   --- 2026-09-01T21:00:00.000Z ---
   2026-09-01  8.00h  ABC-1
@@ -1095,13 +1097,13 @@ if let notify = CommandLine.arguments.firstIndex(of: "--notify"), CommandLine.ar
     $0.action == #selector(NSText.paste(_:)) && $0.key == "v" && $0.modifiers == .command
   }, "paste shortcut")
   print("ok")
-} else if CommandLine.arguments.contains("--agent-status") {
+} else if arguments.contains("--agent-status") {
   runAgentMode {
     let settings = try SettingsStore().load()
     let state = try await SnapshotStore().refresh(using: .live(settings: settings))
     print("\(state.checkedAt) miesiąc: \(nativeHours(state.month?.sourceSeconds ?? 0))/\(nativeHours(state.monthCapacity?.expectedSeconds ?? 0))h")
   }
-} else if CommandLine.arguments.contains("--agent-reminder") {
+} else if arguments.contains("--agent-reminder") {
   runAgentMode {
     let settings = try SettingsStore().load()
     let decision = try await TimeReportEngine.live(settings: settings).reminder()
@@ -1110,7 +1112,7 @@ if let notify = CommandLine.arguments.firstIndex(of: "--notify"), CommandLine.ar
     }
     print(decision.message ?? "Wszystkie dni robocze są kompletne.")
   }
-} else if CommandLine.arguments.contains("--agent-sync") {
+} else if arguments.contains("--agent-sync") {
   print("--- \(TimeReportEngine.iso(Date())) ---")
   runAgentMode {
     let settings = try SettingsStore().load()
@@ -1125,7 +1127,7 @@ if let notify = CommandLine.arguments.firstIndex(of: "--notify"), CommandLine.ar
       case .collision: print("\(item.day)  \(nativeHours(item.sourceSeconds))h  KOLIZJA: w celu masz \(nativeHours(item.targetSeconds))h - pomijam")
       }
     }
-    if CommandLine.arguments.contains("--dry-run") {
+    if arguments.contains("--dry-run") {
       let seconds = plan.items.filter { $0.state == .add }.reduce(0) { $0 + $1.sourceSeconds }
       print("PODGLĄD: \(nativeHours(seconds))h -> \(settings.targetIssue) (\(now.monthID))")
       return
@@ -1137,7 +1139,7 @@ if let notify = CommandLine.arguments.firstIndex(of: "--notify"), CommandLine.ar
       _ = deliverNotification("Wykryto \(result.collisionsSkipped) różnice w \(now.monthID). Automatyzacja niczego nie nadpisała.", category: collisionCategory)
     }
   }
-} else if CommandLine.arguments.contains("--check-config-native") {
+} else if arguments.contains("--check-config-native") {
   runAgentMode {
     let settings = try SettingsStore().load()
     let source = try await JiraClient(credentials: settings.source).currentUser()
