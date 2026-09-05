@@ -301,6 +301,7 @@ private func todayPeriod() -> String {
     updaterDelegate: nil,
     userDriverDelegate: nil
   )
+  private var updaterReadinessObservation: NSKeyValueObservation?
   private let headerMonthLabel = NSTextField(labelWithString: "")
   private let headerMonthValue = NSTextField(labelWithString: "—")
   private let headerMonthDetail = NSTextField(labelWithString: "Czekam na dane")
@@ -405,10 +406,10 @@ private func todayPeriod() -> String {
     menu.addItem(actionItem("Ustawienia i połączenia…", #selector(showSettings), ","))
     let updateItem = NSMenuItem(
       title: "Sprawdź aktualizacje…",
-      action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+      action: #selector(checkForUpdates(_:)),
       keyEquivalent: ""
     )
-    updateItem.target = updaterController
+    updateItem.target = self
     menu.addItem(updateItem)
     menu.addItem(actionItem(configuredSyncEnabled ? "Otwórz log synchronizacji" : "Otwórz log monitoringu", #selector(openLog), "l"))
     menu.addItem(.separator())
@@ -600,6 +601,25 @@ private func todayPeriod() -> String {
   }
 
   func menuWillOpen(_ menu: NSMenu) { refresh() }
+
+  @objc private func checkForUpdates(_ sender: Any?) {
+    let updater = updaterController.updater
+    guard !updater.canCheckForUpdates else {
+      updaterController.checkForUpdates(sender)
+      return
+    }
+
+    updaterReadinessObservation?.invalidate()
+    updaterReadinessObservation = updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { [weak self] _, change in
+      guard change.newValue == true else { return }
+      DispatchQueue.main.async {
+        guard let self else { return }
+        self.updaterReadinessObservation?.invalidate()
+        self.updaterReadinessObservation = nil
+        self.updaterController.checkForUpdates(nil)
+      }
+    }
+  }
 
   private func refresh() {
     let text = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
