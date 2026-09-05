@@ -128,9 +128,10 @@ ad hoc i służy do testów lokalnych. Publiczna dystrybucja wymaga Developer ID
 Po jednorazowej instalacji wersji 2.1 kolejne wydania są sprawdzane automatycznie. Ręczne
 sprawdzenie jest dostępne w menu **Aplikacja → Sprawdź aktualizacje…**.
 
-Tag `vX.Y.Z` uruchamia workflow publikujący podpisane archiwum, DMG i `appcast.xml` w GitHub
-Releases. Repozytorium wymaga sekretu Actions `SPARKLE_PRIVATE_KEY`; jego wartością jest zawartość
-lokalnego, ignorowanego przez Git pliku `.sparkle/private-key`.
+Tag `vX.Y.Z` ustawia wersję aplikacji i uruchamia workflow publikujący podpisane archiwum, DMG i
+`appcast.xml` w GitHub Releases. Numer buildu jest nadawany automatycznie. Repozytorium wymaga
+sekretu Actions `SPARKLE_PRIVATE_KEY`; jego wartością jest zawartość lokalnego, ignorowanego przez
+Git pliku `.sparkle/private-key`.
 
 ## Bezpieczeństwo
 
