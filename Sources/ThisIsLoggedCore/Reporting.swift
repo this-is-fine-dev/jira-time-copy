@@ -144,7 +144,7 @@ public enum Reporting {
     sourceDays: [LocalDay: DayTotal],
     targetDays: [LocalDay: DayTotal]? = nil
   ) -> ReportAnalysis {
-    let yesterday = now.adding(days: -1)
+    let yesterday = previousWorkday(before: now)
     let week = workWeek(now: now)
     let monthFrom = LocalDay("\(now.monthID)-01")!
     let nextMonth = monthFrom.adding(months: 1)
@@ -171,10 +171,20 @@ public enum Reporting {
     var result: [LocalDay] = []
     var date = from
     while date <= to {
-      if date.weekday != 1, date.weekday != 7, !holidays(year: date.year).contains(date) { result.append(date) }
+      if isWorkday(date) { result.append(date) }
       date = date.adding(days: 1)
     }
     return result
+  }
+
+  private static func previousWorkday(before date: LocalDay) -> LocalDay {
+    var candidate = date.adding(days: -1)
+    while !isWorkday(candidate) { candidate = candidate.adding(days: -1) }
+    return candidate
+  }
+
+  private static func isWorkday(_ date: LocalDay) -> Bool {
+    date.weekday != 1 && date.weekday != 7 && !holidays(year: date.year).contains(date)
   }
 
   private static func workWeek(now: LocalDay) -> ClosedRange<LocalDay> {

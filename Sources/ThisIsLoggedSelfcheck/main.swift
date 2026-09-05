@@ -97,6 +97,13 @@ let monday = Reporting.analyze(now: LocalDay("2026-09-07")!, expectedSeconds: ei
 precondition(monday.week.from.description == "2026-08-31" && monday.week.to.description == "2026-09-06")
 precondition(monday.week.workingDays == 5)
 
+let sunday = Reporting.analyze(now: LocalDay("2026-09-06")!, expectedSeconds: eightHours, sourceDays: [
+  LocalDay("2026-09-04")!: DayTotal(seconds: eightHours),
+])
+precondition(sunday.today.workingDays == 0)
+precondition(sunday.yesterday.from.description == "2026-09-04" && sunday.yesterday.sourceSeconds == eightHours)
+precondition(sunday.week.missing.count == 4)
+
 let christmas = Reporting.analyze(now: LocalDay("2026-12-28")!, expectedSeconds: eightHours, sourceDays: [:])
 precondition(christmas.month.missing.contains { $0.date.description == "2026-12-23" })
 precondition(!christmas.month.missing.contains { ["2026-12-24", "2026-12-25", "2026-12-26"].contains($0.date.description) })
