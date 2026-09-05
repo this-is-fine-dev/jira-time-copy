@@ -203,6 +203,10 @@ private func menuIcon() -> NSImage? {
   return image
 }
 
+private func statusBarTitle(seconds: Int, isWeekend: Bool, reportsComplete: Bool) -> String {
+  isWeekend && reportsComplete ? " nadgodzinki?" : " \(nativeHours(seconds)) h"
+}
+
 private func savedSetting(_ key: String, fallback: String) -> String {
   if arguments.contains(where: { $0.contains("selfcheck") }) { return fallback }
   return readSettings()[key] ?? fallback
@@ -324,7 +328,6 @@ private func todayPeriod() -> String {
     let menu = NSMenu()
     menu.delegate = self
     menu.minimumWidth = 410
-    menu.autoenablesItems = false
     menu.addItem(makeHeader())
     menu.addItem(.separator())
     menu.addItem(sectionItem("RAPORTY"))
@@ -610,12 +613,16 @@ private func todayPeriod() -> String {
         todayStatus.title += status.error == nil
           ? " · \(formatter.string(from: checked))"
           : " · offline · dane \(formatter.string(from: checked))"
-        item.button?.title = " \(formatSeconds(today.sourceSeconds)) h"
       } else {
         todayStatus.title = "Dzisiaj · \(formatSeconds(status.seconds ?? 0)) h · \(formatter.string(from: checked))"
         setDetails(todayStatus, ["Ostatni odczyt: \(formatter.string(from: checked))"])
-        item.button?.title = " \(formatSeconds(status.seconds ?? 0)) h"
       }
+      let reportsComplete = status.today?.missing.isEmpty == true && status.week?.missing.isEmpty == true
+      item.button?.title = statusBarTitle(
+        seconds: status.today?.sourceSeconds ?? status.seconds ?? 0,
+        isWeekend: Calendar.current.isDateInWeekend(now),
+        reportsComplete: reportsComplete
+      )
       if let yesterday = status.yesterday {
         renderPeriod(yesterdayStatus, label: "Wczoraj", value: yesterday, expected: expected, showTarget: showTarget)
       } else {
@@ -983,7 +990,7 @@ private func todayPeriod() -> String {
     let syncFrame = panel.contentView!.convert(syncTimeField.bounds, from: syncTimeField)
     let saveFrame = panel.contentView!.convert(saveButton.bounds, from: saveButton)
     precondition(
-      item.menu?.minimumWidth == 410 && header?.frame.height == 96 &&
+      item.menu?.minimumWidth == 410 && item.menu?.autoenablesItems == true && header?.frame.height == 96 &&
         headerMonthValue.frame.height > 0 && headerTodayValue.frame.height > 0 &&
         item.menu?.items.contains(where: { $0.attributedTitle?.string == "RAPORTY" }) == true &&
         item.menu?.items.contains(where: { $0.attributedTitle?.string == "SYNCHRONIZACJA" }) == syncEnabled &&
@@ -1096,6 +1103,8 @@ if let notify = arguments.firstIndex(of: "--notify"), arguments.indices.contains
   precondition(textEditingCommands.contains {
     $0.action == #selector(NSText.paste(_:)) && $0.key == "v" && $0.modifiers == .command
   }, "paste shortcut")
+  precondition(statusBarTitle(seconds: 0, isWeekend: true, reportsComplete: true) == " nadgodzinki?", "weekend easter egg")
+  precondition(statusBarTitle(seconds: 0, isWeekend: true, reportsComplete: false) == " 0.00 h", "weekend warning")
   print("ok")
 } else if arguments.contains("--agent-status") {
   runAgentMode {

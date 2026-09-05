@@ -15,6 +15,11 @@ if rg -q 'CommandLine\.arguments' "$PROJECT_ROOT/macos/main.swift"; then
   exit 1
 fi
 
+if rg -q 'menu\.autoenablesItems = false' "$PROJECT_ROOT/macos/main.swift"; then
+  echo "disabled menu validation prevents Sparkle from exposing updater readiness" >&2
+  exit 1
+fi
+
 env SDKROOT="$SDK_PATH" SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
   swift run --disable-sandbox --disable-keychain --package-path "$PROJECT_ROOT" ThisIsLoggedSelfcheck
 env SDKROOT="$SDK_PATH" SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
