@@ -198,7 +198,7 @@ private func clockParts(_ value: String) -> (hour: Int, minute: Int)? {
 
 private func menuIcon() -> NSImage? {
   guard let iconURL, let image = NSImage(contentsOf: iconURL) else { return nil }
-  image.size = NSSize(width: 19, height: 19)
+  image.size = NSSize(width: 22, height: 22)
   image.isTemplate = false
   return image
 }
